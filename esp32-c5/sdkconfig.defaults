@@ -1,19 +1,31 @@
+# ============================================================
+# ESP32-C5 N16R8 — Target deauther firmware
+# ============================================================
+
 CONFIG_IDF_TARGET="esp32c5"
 
-# Flash / partitions — match reference project settings
-CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
-CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+# ---------- FLASH & PSRAM ----------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Console: USB-Serial-JTAG (only USB-C port on XIAO board)
+# ---------- CONSOLE ----------
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
 
-# WiFi
+# ---------- WIFI ----------
 CONFIG_ESP_WIFI_ENABLED=y
-CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# SoftAP support is REQUIRED by the Evil Portal captive-portal feature
+# (WIFI_MODE_AP + DHCP server). It was previously disabled to save flash/RAM;
+# re-enabling it costs some flash + a little SRAM, so check `idf.py size`
+# headroom on the N16R8 after building.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 CONFIG_ESP_WIFI_NVS_ENABLED=y
 CONFIG_ESP_WIFI_IRAM_OPT=y
 CONFIG_ESP_WIFI_RX_IRAM_OPT=y
@@ -22,24 +34,51 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
 CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
 
+# ---------- BLUETOOTH (NimBLE) ----------
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+# Observer role — WAJIB untuk BLE Scanner (ble_gap_disc / ble_gap_ext_disc).
+# Tanpa ini fungsi scan tidak ter-link.
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 
-# WiFi+BT software coexistence — disable when BT is off
-# CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+# ============================================================
+# BLE 5.0 EXTENDED ADVERTISING — WAJIB untuk BLE Spam
+# Ketiga opsi di bawah harus aktif agar ble_gap_ext_adv_* tersedia
+# ============================================================
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=y
+CONFIG_BT_NIMBLE_EXT_ADV=y
+CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4
 
-# Logging
+# Controller: connections + advertising instances + margin
+CONFIG_BT_CTRL_BLE_MAX_ACT=10
+
+# ============================================================
+# WIFI + BLUETOOTH COEXISTENCE
+# ============================================================
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# ---------- LOGGING ----------
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
-
-# Suppress NimBLE per-packet INFO spam (GATT procedure initiated: notify, etc.)
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 
-# FreeRTOS
+# ---------- FREERTOS ----------
 CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
 
-# NVS
+# ---------- NVS ----------
 CONFIG_NVS_ENCRYPTION=n
+
+# ---------- INFRARED (RMT) ----------
+# NOTE: the IR feature deliberately adds ~0 IRAM so it can never cause an
+# IRAM/SRAM overflow on top of the WiFi+BLE+nRF24 stack (C5 has a single
+# 384 KB SRAM shared between IRAM and DRAM/heap). Robustness against flash
+# writes during capture is handled WITHOUT extra IRAM: ir_save_last() pauses
+# the RMT RX hardware across its LittleFS write, and the RX callback never
+# writes flash. If you have confirmed IRAM headroom with `idf.py size` and
+# want the RX ISR serviceable even during unrelated flash writes, add:
+#   CONFIG_RMT_RX_ISR_CACHE_SAFE=y
+# (the RX done callback is already IRAM_ATTR, so it is ready for that option).

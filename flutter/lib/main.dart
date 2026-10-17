@@ -22,19 +22,29 @@ class DeautherApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: settings),
-        Provider.value(value: api),
+        ChangeNotifierProvider.value(value: api),
       ],
-      child: MaterialApp(
-        title: 'ESP32-C5 Deauther',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.tealAccent,
-            brightness: Brightness.dark,
+      child: Consumer<Settings>(
+        builder: (context, s, _) => MaterialApp(
+          title: 'ESP32-C5 Deauther',
+          debugShowCheckedModeBanner: false,
+          themeMode: s.darkMode ? ThemeMode.dark : ThemeMode.light,
+          darkTheme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: Colors.tealAccent,
+              brightness: Brightness.dark,
+            ),
+            useMaterial3: true,
           ),
-          useMaterial3: true,
+          theme: ThemeData(
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: Colors.teal,
+              brightness: Brightness.light,
+            ),
+            useMaterial3: true,
+          ),
+          home: const ScanScreen(),
         ),
-        home: const ScanScreen(),
       ),
     );
   }

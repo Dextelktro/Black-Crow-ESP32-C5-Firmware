@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "esp_err.h"
+
 #define ACL_MAX 32
 
 typedef enum {
@@ -11,19 +13,19 @@ typedef enum {
     ACL_KIND_BSSID = 2,
 } acl_kind_t;
 
-void acl_init(void);
+esp_err_t acl_init(void);
 
 /* Whitelist: MACs that must NEVER be deauth'd. */
-int  acl_wl_add(const uint8_t *mac, acl_kind_t kind);    /* 0 ok, -1 full, -2 dup */
-int  acl_wl_remove(const uint8_t *mac);                  /* 0 ok, -1 not found */
-void acl_wl_clear(void);
+int  acl_wl_add(const uint8_t *mac, acl_kind_t kind);    /* 0 ok, -1 full, -2 dup, -3 persistence failure */
+int  acl_wl_remove(const uint8_t *mac);                  /* 0 ok, -1 not found, -2 persistence failure */
+int  acl_wl_clear(void);                                 /* 0 ok, -1 persistence failure */
 bool acl_wl_contains(const uint8_t *mac);
 void acl_wl_list(void);
 
 /* Blacklist: MACs that should ALWAYS be deauth'd when seen. */
 int  acl_bl_add(const uint8_t *mac, acl_kind_t kind);
 int  acl_bl_remove(const uint8_t *mac);
-void acl_bl_clear(void);
+int  acl_bl_clear(void);
 bool acl_bl_contains(const uint8_t *mac);
 void acl_bl_list(void);
 

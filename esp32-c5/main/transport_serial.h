@@ -1,3 +1,5 @@
 #pragma once
 
-void transport_serial_init(void);
+#include <stdbool.h>
+
+bool transport_serial_init(void);

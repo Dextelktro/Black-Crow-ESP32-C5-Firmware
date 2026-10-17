@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "esp_err.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -55,31 +56,47 @@ static int count(const acl_list_t *l)
     return c;
 }
 
-static void persist(const char *key, const acl_list_t *l)
+static esp_err_t persist(const char *key, const acl_list_t *l)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_blob(h, key, l, sizeof(*l));
-    nvs_commit(h);
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_blob(h, key, l, sizeof(*l));
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    return err;
 }
 
-static void load(const char *key, acl_list_t *l)
+static esp_err_t load(const char *key, acl_list_t *l)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) {
+        io_log("acl: failed to open stored %s (err=%d)\r\n", key, err);
+        return err;
+    }
     size_t sz = sizeof(*l);
-    nvs_get_blob(h, key, l, &sz);  /* leaves zeroed if missing */
+    err = nvs_get_blob(h, key, l, &sz);
     nvs_close(h);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        memset(l, 0, sizeof(*l));
+        io_log("acl: failed to load stored %s (err=%d); using empty list\r\n",
+               key, err);
+        return err;
+    }
+    return ESP_OK;
 }
 
-void acl_init(void)
+esp_err_t acl_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_mutex ? ESP_OK : ESP_ERR_NO_MEM);
     memset(&s_wl, 0, sizeof(s_wl));
     memset(&s_bl, 0, sizeof(s_bl));
-    load(NVS_KEY_W, &s_wl);
-    load(NVS_KEY_B, &s_bl);
+    esp_err_t wl_err = load(NVS_KEY_W, &s_wl);
+    esp_err_t bl_err = load(NVS_KEY_B, &s_bl);
+    return wl_err != ESP_OK ? wl_err : bl_err;
 }
 
 static int add(acl_list_t *l, const uint8_t *mac, acl_kind_t kind)
@@ -124,8 +141,17 @@ static void list(const acl_list_t *l, const char *tag)
 int acl_wl_add(const uint8_t *mac, acl_kind_t kind)
 {
     LOCK();
+    acl_list_t previous = s_wl;
     int rc = add(&s_wl, mac, kind);
-    if (rc == 0) persist(NVS_KEY_W, &s_wl);
+    if (rc == 0) {
+        esp_err_t err = persist(NVS_KEY_W, &s_wl);
+        if (err != ESP_OK) {
+            s_wl = previous;
+            io_log("acl: failed to persist whitelist (err=%d); change reverted\r\n",
+                   err);
+            rc = -3;
+        }
+    }
     UNLOCK();
     return rc;
 }
@@ -133,18 +159,34 @@ int acl_wl_add(const uint8_t *mac, acl_kind_t kind)
 int acl_wl_remove(const uint8_t *mac)
 {
     LOCK();
+    acl_list_t previous = s_wl;
     int rc = remove_mac(&s_wl, mac);
-    if (rc == 0) persist(NVS_KEY_W, &s_wl);
+    if (rc == 0) {
+        esp_err_t err = persist(NVS_KEY_W, &s_wl);
+        if (err != ESP_OK) {
+            s_wl = previous;
+            io_log("acl: failed to persist whitelist (err=%d); change reverted\r\n",
+                   err);
+            rc = -2;
+        }
+    }
     UNLOCK();
     return rc;
 }
 
-void acl_wl_clear(void)
+int acl_wl_clear(void)
 {
     LOCK();
+    acl_list_t previous = s_wl;
     clear(&s_wl);
-    persist(NVS_KEY_W, &s_wl);
+    esp_err_t err = persist(NVS_KEY_W, &s_wl);
+    if (err != ESP_OK) {
+        s_wl = previous;
+        io_log("acl: failed to persist whitelist clear (err=%d); change reverted\r\n",
+               err);
+    }
     UNLOCK();
+    return err == ESP_OK ? 0 : -1;
 }
 
 bool acl_wl_contains(const uint8_t *mac)
@@ -165,8 +207,17 @@ void acl_wl_list(void)
 int acl_bl_add(const uint8_t *mac, acl_kind_t kind)
 {
     LOCK();
+    acl_list_t previous = s_bl;
     int rc = add(&s_bl, mac, kind);
-    if (rc == 0) persist(NVS_KEY_B, &s_bl);
+    if (rc == 0) {
+        esp_err_t err = persist(NVS_KEY_B, &s_bl);
+        if (err != ESP_OK) {
+            s_bl = previous;
+            io_log("acl: failed to persist blacklist (err=%d); change reverted\r\n",
+                   err);
+            rc = -3;
+        }
+    }
     UNLOCK();
     return rc;
 }
@@ -174,18 +225,34 @@ int acl_bl_add(const uint8_t *mac, acl_kind_t kind)
 int acl_bl_remove(const uint8_t *mac)
 {
     LOCK();
+    acl_list_t previous = s_bl;
     int rc = remove_mac(&s_bl, mac);
-    if (rc == 0) persist(NVS_KEY_B, &s_bl);
+    if (rc == 0) {
+        esp_err_t err = persist(NVS_KEY_B, &s_bl);
+        if (err != ESP_OK) {
+            s_bl = previous;
+            io_log("acl: failed to persist blacklist (err=%d); change reverted\r\n",
+                   err);
+            rc = -2;
+        }
+    }
     UNLOCK();
     return rc;
 }
 
-void acl_bl_clear(void)
+int acl_bl_clear(void)
 {
     LOCK();
+    acl_list_t previous = s_bl;
     clear(&s_bl);
-    persist(NVS_KEY_B, &s_bl);
+    esp_err_t err = persist(NVS_KEY_B, &s_bl);
+    if (err != ESP_OK) {
+        s_bl = previous;
+        io_log("acl: failed to persist blacklist clear (err=%d); change reverted\r\n",
+               err);
+    }
     UNLOCK();
+    return err == ESP_OK ? 0 : -1;
 }
 
 bool acl_bl_contains(const uint8_t *mac)

@@ -1,3 +1,5 @@
 dependencies:
   idf:
     version: ">=5.4.0"
+  espressif/led_strip: "^3.0.0"
+  joltwallet/littlefs: "^1.22.1"

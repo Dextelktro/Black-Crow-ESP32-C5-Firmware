@@ -7,6 +7,7 @@
 
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
+#include "esp_err.h"
 
 #include "io.h"
 #include "targets.h"
@@ -14,6 +15,45 @@
 static uint8_t s_filter_bssid[6];
 static uint8_t s_channel;
 static bool s_sweep_mode = false;
+static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void cb(void *buf, wifi_promiscuous_pkt_type_t type);
+
+static esp_err_t promiscuous_start(void)
+{
+    wifi_promiscuous_filter_t filt = {
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA,
+    };
+    esp_err_t err = esp_wifi_set_promiscuous_filter(&filt);
+    if (err != ESP_OK) {
+        io_log("sniff: set filter failed (err=%d)\r\n", (int)err);
+        return err;
+    }
+
+    err = esp_wifi_set_promiscuous_rx_cb(cb);
+    if (err != ESP_OK) {
+        io_log("sniff: set callback failed (err=%d)\r\n", (int)err);
+        return err;
+    }
+
+    err = esp_wifi_set_promiscuous(true);
+    if (err != ESP_OK) {
+        io_log("sniff: enable promiscuous mode failed (err=%d)\r\n", (int)err);
+    }
+    return err;
+}
+
+static void promiscuous_stop(void)
+{
+    /* Detach the capture callback but KEEP promiscuous mode enabled.
+     * wifi_ctrl_init() turns promiscuous on as a precondition for
+     * esp_wifi_80211_tx(); disabling it here would silently break every
+     * subsequent deauth / nuke / deauth-all / monitor until reboot. */
+    esp_err_t err = esp_wifi_set_promiscuous_rx_cb(NULL);
+    if (err != ESP_OK) {
+        io_log("sniff: detach rx cb failed (err=%d)\r\n", (int)err);
+    }
+}
 
 /* 802.11 frame control: bit positions
  * byte0 = | proto(2) | type(2) | subtype(4) |
@@ -45,6 +85,9 @@ static void cb(void *buf, wifi_promiscuous_pkt_type_t type)
 
     const uint8_t *bssid = NULL;
     const uint8_t *sta   = NULL;
+    uint8_t filter_bssid[6];
+    uint8_t channel;
+    bool sweep_mode;
 
     if (ftype == 0) {
         /* mgmt: BSSID is addr3, STA is addr2 (e.g., probe req from STA) */
@@ -59,23 +102,36 @@ static void cb(void *buf, wifi_promiscuous_pkt_type_t type)
         return;
     }
 
-    if (!s_sweep_mode && memcmp(bssid, s_filter_bssid, 6) != 0) return;
+    portENTER_CRITICAL(&s_state_mux);
+    sweep_mode = s_sweep_mode;
+    channel = s_channel;
+    memcpy(filter_bssid, s_filter_bssid, sizeof(filter_bssid));
+    portEXIT_CRITICAL(&s_state_mux);
+
+    if (!sweep_mode && memcmp(bssid, filter_bssid, 6) != 0) return;
 
     /* skip multicast/broadcast STAs */
     if (sta[0] & 0x01) return;
     /* skip our own mac mirrored back */
     if (memcmp(sta, bssid, 6) == 0) return;
 
-    targets_add_sta(sta, bssid, s_channel, p->rx_ctrl.rssi);
+    targets_add_sta(sta, bssid, channel, p->rx_ctrl.rssi);
 }
 
 int sniffer_run(uint8_t channel, const uint8_t *bssid, uint32_t seconds)
 {
+    if (!bssid) {
+        io_log("sniff: missing BSSID\r\n");
+        return -1;
+    }
     if (seconds == 0) seconds = 5;
     if (seconds > 120) seconds = 120;
 
-    memcpy(s_filter_bssid, bssid, 6);
+    portENTER_CRITICAL(&s_state_mux);
+    memcpy(s_filter_bssid, bssid, sizeof(s_filter_bssid));
     s_channel = channel;
+    s_sweep_mode = false;
+    portEXIT_CRITICAL(&s_state_mux);
 
     int before = targets_sta_count();
 
@@ -84,17 +140,17 @@ int sniffer_run(uint8_t channel, const uint8_t *bssid, uint32_t seconds)
            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
            (unsigned)seconds);
 
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    wifi_promiscuous_filter_t filt = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA,
-    };
-    esp_wifi_set_promiscuous_filter(&filt);
-    esp_wifi_set_promiscuous_rx_cb(cb);
-    esp_wifi_set_promiscuous(true);
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        io_log("sniff: set channel %u failed (err=%d)\r\n",
+               (unsigned)channel, (int)err);
+        return -1;
+    }
+    if (promiscuous_start() != ESP_OK) return -1;
 
     vTaskDelay(pdMS_TO_TICKS(seconds * 1000));
 
-    esp_wifi_set_promiscuous(false);
+    promiscuous_stop();
 
     int after = targets_sta_count();
     io_log("sniff: done, +%d STAs (total %d)\r\n", after - before, after);
@@ -114,23 +170,49 @@ int sniffer_sweep(uint32_t seconds)
     uint32_t dwell_ms = (seconds * 1000) / n_ch;
     if (dwell_ms < 500) dwell_ms = 500;
 
+    portENTER_CRITICAL(&s_state_mux);
     s_sweep_mode = true;
+    s_channel = channels[0];
+    portEXIT_CRITICAL(&s_state_mux);
+    esp_err_t err = esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        portENTER_CRITICAL(&s_state_mux);
+        s_sweep_mode = false;
+        portEXIT_CRITICAL(&s_state_mux);
+        io_log("sniff: set channel %u failed (err=%d)\r\n",
+               (unsigned)s_channel, (int)err);
+        return -1;
+    }
+    if (promiscuous_start() != ESP_OK) {
+        portENTER_CRITICAL(&s_state_mux);
+        s_sweep_mode = false;
+        portEXIT_CRITICAL(&s_state_mux);
+        return -1;
+    }
 
-    wifi_promiscuous_filter_t filt = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA,
-    };
-    esp_wifi_set_promiscuous_filter(&filt);
-    esp_wifi_set_promiscuous_rx_cb(cb);
-    esp_wifi_set_promiscuous(true);
-
+    bool channel_error = false;
     for (int i = 0; i < n_ch; i++) {
-        s_channel = channels[i];
-        esp_wifi_set_channel(channels[i], WIFI_SECOND_CHAN_NONE);
+        if (i > 0) {
+            portENTER_CRITICAL(&s_state_mux);
+            s_channel = channels[i];
+            portEXIT_CRITICAL(&s_state_mux);
+            err = esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+            if (err != ESP_OK) {
+                io_log("sniff: set channel %u failed (err=%d)\r\n",
+                       (unsigned)s_channel, (int)err);
+                channel_error = true;
+                break;
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(dwell_ms));
     }
 
-    esp_wifi_set_promiscuous(false);
+    promiscuous_stop();
+    portENTER_CRITICAL(&s_state_mux);
     s_sweep_mode = false;
+    portEXIT_CRITICAL(&s_state_mux);
+
+    if (channel_error) return -1;
 
     int total = targets_sta_count();
     io_log("dev: %d devices found\r\n", total);

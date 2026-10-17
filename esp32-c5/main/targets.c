@@ -7,11 +7,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "io.h"
 
 static SemaphoreHandle_t s_mutex;
 
-static target_ap_t  s_aps[TARGETS_MAX_APS];
+static target_ap_t *s_aps;
 static int          s_ap_count = 0;
 
 static target_sta_t s_stas[TARGETS_MAX_STAS];
@@ -37,6 +39,11 @@ static attack_mode_t s_mode = ATTACK_MODE_BROADCAST;
 void targets_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+
+    s_aps = heap_caps_calloc(TARGETS_MAX_APS, sizeof(*s_aps),
+                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_ERROR_CHECK(s_aps ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
 void targets_set_aps(const target_ap_t *aps, uint16_t n)
@@ -356,11 +363,12 @@ attack_mode_t targets_get_mode(void)
 const char *targets_mode_name(attack_mode_t m)
 {
     switch (m) {
-        case ATTACK_MODE_BROADCAST: return "broadcast";
-        case ATTACK_MODE_UNICAST:   return "unicast";
-        case ATTACK_MODE_DISASSOC:  return "disassoc";
-        case ATTACK_MODE_AUTHFLOOD: return "authflood";
-        case ATTACK_MODE_MIXED:     return "mixed";
+        case ATTACK_MODE_BROADCAST:  return "broadcast";
+        case ATTACK_MODE_UNICAST:    return "unicast";
+        case ATTACK_MODE_DISASSOC:   return "disassoc";
+        case ATTACK_MODE_AUTHFLOOD:  return "authflood";
+        case ATTACK_MODE_MIXED:      return "mixed";
+        case ATTACK_MODE_DEAUTH_ALL: return "deauthall";
     }
     return "?";
 }
@@ -368,10 +376,11 @@ const char *targets_mode_name(attack_mode_t m)
 int targets_mode_from_name(const char *name, attack_mode_t *out)
 {
     if (!name || !out) return -1;
-    if (strcasecmp(name, "broadcast") == 0) { *out = ATTACK_MODE_BROADCAST; return 0; }
-    if (strcasecmp(name, "unicast")   == 0) { *out = ATTACK_MODE_UNICAST;   return 0; }
-    if (strcasecmp(name, "disassoc")  == 0) { *out = ATTACK_MODE_DISASSOC;  return 0; }
-    if (strcasecmp(name, "authflood") == 0) { *out = ATTACK_MODE_AUTHFLOOD; return 0; }
-    if (strcasecmp(name, "mixed")     == 0) { *out = ATTACK_MODE_MIXED;     return 0; }
+    if (strcasecmp(name, "broadcast")  == 0) { *out = ATTACK_MODE_BROADCAST;  return 0; }
+    if (strcasecmp(name, "unicast")    == 0) { *out = ATTACK_MODE_UNICAST;    return 0; }
+    if (strcasecmp(name, "disassoc")   == 0) { *out = ATTACK_MODE_DISASSOC;   return 0; }
+    if (strcasecmp(name, "authflood")  == 0) { *out = ATTACK_MODE_AUTHFLOOD;  return 0; }
+    if (strcasecmp(name, "mixed")      == 0) { *out = ATTACK_MODE_MIXED;      return 0; }
+    if (strcasecmp(name, "deauthall")  == 0) { *out = ATTACK_MODE_DEAUTH_ALL; return 0; }
     return -1;
 }

@@ -51,7 +51,7 @@ jobs:
 
             python -m esptool --chip esp32c5 -b 460800 \
               --before default_reset --after hard_reset \
-              write_flash --flash_mode dio --flash_size 2MB --flash_freq 40m \
+              write_flash --flash_mode dio --flash_size 16MB --flash_freq 40m \
               0x2000  bootloader.bin \
               0x8000  partition-table.bin \
               0x10000 esp32c5_deauther.bin
@@ -68,7 +68,7 @@ jobs:
           cd esp32-c5/build
           esptool.py --chip esp32c5 merge_bin \
             --output ../../release/esp32c5-deauther-merged.bin \
-            --flash_mode dio --flash_size 2MB --flash_freq 40m \
+            --flash_mode dio --flash_size 16MB --flash_freq 40m \
             0x2000  bootloader/bootloader.bin \
             0x8000  partition_table/partition-table.bin \
             0x10000 esp32c5_deauther.bin

@@ -1,45 +1,93 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 
 import 'device_controller.dart';
 import 'settings.dart';
 
-class ApiServer {
+class ApiServer extends ChangeNotifier {
   ApiServer(this._settings) {
     _settings.addListener(_onSettingsChanged);
-    // Apply persisted settings once the async load resolves.
-    Future.microtask(() {
-      if (_settings.apiEnabled) start(_settings.apiPort);
-    });
+    _onSettingsChanged();
   }
 
   final Settings _settings;
   DeviceController? _ctrl;
   HttpServer? _server;
+  Future<void> _lifecycleQueue = Future<void>.value();
+  int? _boundPort;
+  String? _error;
+  bool _disposed = false;
 
   bool get isRunning => _server != null;
+  int? get boundPort => _boundPort;
+  String? get error => _error;
   int get port => _settings.apiPort;
 
   void attach(DeviceController ctrl) => _ctrl = ctrl;
   void detach() => _ctrl = null;
 
-  Future<void> start(int port) async {
-    await stop();
-    _server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
-    _server!.listen(_handle);
-  }
-
-  Future<void> stop() async {
-    await _server?.close(force: true);
-    _server = null;
-  }
-
   void _onSettingsChanged() {
-    if (_settings.apiEnabled) {
-      start(_settings.apiPort);
-    } else {
-      stop();
+    if (_disposed) return;
+    _lifecycleQueue = _lifecycleQueue.then((_) => _applySettings()).catchError((
+      Object error,
+      StackTrace stackTrace,
+    ) {
+      _setError('API server failed: $error');
+      debugPrint('API server lifecycle failed: $error\n$stackTrace');
+    });
+  }
+
+  Future<void> _applySettings() async {
+    if (_disposed) return;
+    if (!_settings.apiEnabled) {
+      await _stopServer();
+      _setError(null);
+      return;
     }
+    if (_server != null && _boundPort == _settings.apiPort) return;
+
+    await _stopServer();
+    final server = await HttpServer.bind(
+      InternetAddress.loopbackIPv4,
+      _settings.apiPort,
+    );
+    if (_disposed) {
+      await server.close(force: true);
+      return;
+    }
+    _server = server;
+    _boundPort = server.port;
+    server.listen(
+      _handle,
+      onError: (Object error, StackTrace stackTrace) {
+        _setError('API server stream failed: $error');
+        debugPrint('API server stream failed: $error\n$stackTrace');
+      },
+      onDone: () {
+        if (!identical(_server, server)) return;
+        _server = null;
+        _boundPort = null;
+        _setError('API server stopped unexpectedly');
+      },
+    );
+    _setError(null);
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _stopServer() async {
+    final server = _server;
+    _server = null;
+    _boundPort = null;
+    await server?.close(force: true);
+  }
+
+  void _setError(String? error) {
+    if (_error == error) return;
+    _error = error;
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> _handle(HttpRequest req) async {
@@ -52,91 +100,138 @@ class ApiServer {
 
     try {
       if (path == '/' && method == 'GET') {
-        _ok(req, {'status': 'ok', 'connected': ctrl != null});
+        await _ok(req, {
+          'status': 'ok',
+          'connected': ctrl != null && !ctrl.connectionLost,
+        });
         return;
       }
       if (ctrl == null) {
-        _err(req, 503, 'no device connected');
+        await _err(req, 503, 'no device connected');
         return;
       }
       switch ('$method $path') {
         case 'GET /device':
-          _ok(req, _deviceJson(ctrl));
+          await _ok(req, _deviceJson(ctrl));
+          return;
         case 'GET /aps':
-          _ok(req, {
+          await _ok(req, {
             'aps': ctrl.aps
-                .map((a) => {
-                      'idx': a.idx,
-                      'channel': a.channel,
-                      'band': a.is5ghz ? '5GHz' : '2.4GHz',
-                      'rssi': a.rssi,
-                      'bssid': a.bssid,
-                      'ssid': a.ssid,
-                    })
-                .toList()
+                .map(
+                  (a) => {
+                    'idx': a.idx,
+                    'channel': a.channel,
+                    'band': a.is5ghz ? '5GHz' : '2.4GHz',
+                    'rssi': a.rssi,
+                    'bssid': a.bssid,
+                    'ssid': a.ssid,
+                  },
+                )
+                .toList(),
           });
+          return;
         case 'GET /log':
-          _ok(req, {'log': ctrl.rawLog});
+          await _ok(req, {'log': ctrl.rawLog});
+          return;
         case 'POST /scan':
           await ctrl.scanWifi();
-          _ok(req, {'ok': true});
+          await _ok(req, {'ok': true});
+          return;
         case 'POST /attack/start':
           await ctrl.startAttack();
-          _ok(req, {'ok': true});
+          await _ok(req, {'ok': true});
+          return;
         case 'POST /attack/stop':
           await ctrl.stopAttack();
-          _ok(req, {'ok': true});
+          await _ok(req, {'ok': true});
+          return;
         case 'POST /nuke':
-          final body = jsonDecode(await _readBody(req)) as Map<String, dynamic>;
-          await ctrl.nuke((body['secs'] as int?) ?? 30);
-          _ok(req, {'ok': true});
-        case 'POST /cmd':
-          final body = jsonDecode(await _readBody(req)) as Map<String, dynamic>;
-          final cmd = body['cmd'] as String?;
-          if (cmd == null || cmd.isEmpty) {
-            _err(req, 400, 'missing cmd');
-          } else {
-            await ctrl.conn.send(cmd);
-            _ok(req, {'ok': true});
+          final body = await _readJsonObject(req);
+          final secs = body['secs'];
+          if (secs != null && secs is! int) {
+            await _err(req, 400, 'secs must be an integer');
+            return;
           }
+          await ctrl.nuke(secs as int? ?? 30);
+          await _ok(req, {'ok': true});
+          return;
+        case 'POST /cmd':
+          final body = await _readJsonObject(req);
+          final cmd = body['cmd'];
+          if (cmd is! String || cmd.trim().isEmpty) {
+            await _err(req, 400, 'cmd must be a non-empty string');
+            return;
+          }
+          await ctrl.send(cmd);
+          await _ok(req, {'ok': true});
+          return;
         default:
-          _err(req, 404, 'not found');
+          await _err(req, 404, 'not found');
+          return;
       }
+    } on FormatException catch (error) {
+      await _err(req, 400, 'invalid JSON: ${error.message}');
     } catch (e) {
-      _err(req, 500, '$e');
+      await _err(req, 500, '$e');
     }
   }
 
   Map<String, dynamic> _deviceJson(DeviceController ctrl) => {
-        'connected': true,
-        'attacking': ctrl.attacking,
-        'attackMode': ctrl.attackMode,
-        'scanning': ctrl.scanning,
-        'selectedIdxs': ctrl.selectedIdxs.toList(),
-        'apCount': ctrl.aps.length,
-      };
+    'connected': !ctrl.connectionLost,
+    'attacking': ctrl.attacking,
+    'attackMode': ctrl.attackMode,
+    'scanning': ctrl.scanning,
+    'selectedIdxs': ctrl.selectedIdxs.toList(),
+    'apCount': ctrl.aps.length,
+    'chipTemperatureC': ctrl.chipTemperatureC,
+    'chipTemperatureUpdatedAt': ctrl.chipTemperatureUpdatedAt
+        ?.toIso8601String(),
+  };
 
   Future<String> _readBody(HttpRequest req) async {
     final bytes = await req.fold<List<int>>([], (a, b) => a..addAll(b));
     return utf8.decode(bytes);
   }
 
-  void _ok(HttpRequest req, Map<String, dynamic> data) {
+  Future<Map<String, dynamic>> _readJsonObject(HttpRequest req) async {
+    final decoded = jsonDecode(await _readBody(req));
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException('request body must be a JSON object');
+    }
+    return decoded;
+  }
+
+  Future<void> _ok(HttpRequest req, Map<String, dynamic> data) async {
     req.response
       ..statusCode = 200
       ..write(jsonEncode(data));
-    req.response.close();
+    await req.response.close();
   }
 
-  void _err(HttpRequest req, int code, String msg) {
+  Future<void> _err(HttpRequest req, int code, String msg) async {
     req.response
       ..statusCode = code
       ..write(jsonEncode({'error': msg}));
-    req.response.close();
+    await req.response.close();
   }
 
+  @override
   void dispose() {
     _settings.removeListener(_onSettingsChanged);
-    stop();
+    _disposed = true;
+    final server = _server;
+    _server = null;
+    _boundPort = null;
+    if (server != null) {
+      unawaited(
+        server.close(force: true).then<void>((_) {}).catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          debugPrint('API server close failed: $error\n$stackTrace');
+        }),
+      );
+    }
+    super.dispose();
   }
 }

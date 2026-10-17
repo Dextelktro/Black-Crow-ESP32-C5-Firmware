@@ -5,12 +5,14 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+#include "esp_err.h"
+
 /* A transport's output sink. Called from any task; must be reentrant-safe
  * (use a ringbuffer or stream buffer internally). */
 typedef void (*io_sink_fn)(const char *buf, size_t len, void *ctx);
 
 /* Set up the broadcast bus. Call once at boot before transports register. */
-void io_init(void);
+esp_err_t io_init(void);
 
 /* Register a transport's output sink. Up to 4 sinks supported. */
 int io_register_sink(io_sink_fn fn, void *ctx);

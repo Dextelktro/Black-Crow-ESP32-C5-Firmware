@@ -23,11 +23,12 @@ typedef struct {
 } target_sta_t;
 
 typedef enum {
-    ATTACK_MODE_BROADCAST = 0,  /* deauth FF:FF:FF:FF:FF:FF on each target AP */
-    ATTACK_MODE_UNICAST,        /* deauth the selected STA */
-    ATTACK_MODE_DISASSOC,       /* same as broadcast but disassoc subtype */
-    ATTACK_MODE_AUTHFLOOD,      /* auth-flood the target AP */
-    ATTACK_MODE_MIXED,          /* rotate through all */
+    ATTACK_MODE_BROADCAST = 0,      /* deauth FF:FF:FF:FF:FF:FF on each target AP */
+    ATTACK_MODE_UNICAST,            /* deauth the selected STA */
+    ATTACK_MODE_DISASSOC,           /* same as broadcast but disassoc subtype */
+    ATTACK_MODE_AUTHFLOOD,          /* auth-flood the target AP */
+    ATTACK_MODE_MIXED,              /* rotate through all */
+    ATTACK_MODE_DEAUTH_ALL,         /* aggressive channel-hop deauth */
 } attack_mode_t;
 
 void targets_init(void);

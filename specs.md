@@ -1,6 +1,8 @@
 # Seeed Studio XIAO ESP32-C5 — Specs
 
-Reference board for this project.
+Hardware reference board. The firmware defaults target ESP32-C5 N16R8
+(16 MB flash, 8 MB quad PSRAM); this XIAO's 8 MB flash requires matching
+flash-size and partition settings before using it.
 
 - Wiki / getting started: https://wiki.seeedstudio.com/xiao_esp32c5_getting_started/
 - Official OSHW repo (schematics, KiCad, datasheets): https://github.com/Seeed-Studio/OSHW-XIAO-Series

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
@@ -20,70 +21,122 @@ class ScanScreen extends StatefulWidget {
 }
 
 class _ScanScreenState extends State<ScanScreen> {
+  static const MethodChannel _platform = MethodChannel('deauther/platform');
+
   final NusClient _client = NusClient();
   StreamSubscription<List<ScanResult>>? _resultsSub;
   StreamSubscription<bool>? _scanningSub;
   StreamSubscription<BluetoothAdapterState>? _adapterSub;
   List<ScanResult> _results = [];
+  List<ScanResult>? _pendingResults;
   bool _scanning = false;
+  bool _scanStarting = false;
   bool _connecting = false;
+  bool _autoRescan = true;
   Timer? _rescanTimer;
+  Timer? _resultUpdateTimer;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _scanningSub = FlutterBluePlus.isScanning.listen((s) {
-      if (!mounted) return;
-      final wasScanning = _scanning;
-      setState(() => _scanning = s);
-      // When a scan cycle ends naturally, schedule the next one in 5 seconds.
-      if (wasScanning && !s && !_connecting) {
-        _rescanTimer?.cancel();
-        _rescanTimer = Timer(const Duration(seconds: 5), () {
-          if (mounted && !_connecting) _maybeStartScan();
-        });
-      }
-    });
+    _scanningSub = FlutterBluePlus.isScanning.listen(
+      (s) {
+        if (!mounted) return;
+        final wasScanning = _scanning;
+        setState(() => _scanning = s);
+        if (s) _scanStarting = false;
+        // When a scan cycle ends naturally, schedule the next one in 5 seconds.
+        if (wasScanning && !s && !_connecting && _autoRescan) {
+          _rescanTimer?.cancel();
+          _resultUpdateTimer?.cancel();
+          _rescanTimer = Timer(const Duration(seconds: 5), () {
+            if (mounted && !_connecting && _autoRescan) _maybeStartScan();
+          });
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!mounted) return;
+        setState(() => _error = 'Bluetooth scan state failed: $error');
+        debugPrint('Bluetooth scan state failed: $error\n$stackTrace');
+      },
+    );
     // Kick off a scan when BT adapter turns on (handles the case where BT was
     // off at startup and the user enables it via the system dialog).
-    _adapterSub = FlutterBluePlus.adapterState.listen((state) {
-      if (state == BluetoothAdapterState.on && !_scanning && !_connecting && mounted) {
-        _maybeStartScan();
-      }
-    });
+    _adapterSub = FlutterBluePlus.adapterState.listen(
+      (state) {
+        if (state == BluetoothAdapterState.on &&
+            !_scanning &&
+            !_scanStarting &&
+            !_connecting &&
+            _autoRescan &&
+            mounted) {
+          _maybeStartScan();
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        if (!mounted) return;
+        setState(() => _error = 'Bluetooth adapter state failed: $error');
+        debugPrint('Bluetooth adapter state failed: $error\n$stackTrace');
+      },
+    );
     _maybeStartScan();
   }
 
   @override
   void dispose() {
     _rescanTimer?.cancel();
+    _resultUpdateTimer?.cancel();
     _resultsSub?.cancel();
     _scanningSub?.cancel();
     _adapterSub?.cancel();
-    _client.stopScan();
+    unawaited(_client.stopScan().catchError((Object error) {
+      debugPrint('BLE scan cleanup failed: $error');
+    }));
     super.dispose();
   }
 
   Future<void> _maybeStartScan() async {
-    if (!await _ensurePermissions()) return;
-    if (!await _ensureAdapterOn()) return;
-    _startScan();
+    if (_scanning || _scanStarting || _connecting) return;
+    _scanStarting = true;
+    try {
+      if (!await _ensurePermissions() || !mounted) return;
+      if (!await _ensureAdapterOn() || !mounted) return;
+      _startScan();
+    } catch (e) {
+      if (mounted) setState(() => _error = 'BLE scan setup failed: $e');
+    } finally {
+      if (!_scanning) _scanStarting = false;
+    }
   }
 
   Future<bool> _ensurePermissions() async {
     if (!Platform.isAndroid) return true;
-    // BLUETOOTH_SCAN is declared with neverForLocation in the manifest,
-    // so location permission is not required on API 31+.
-    final statuses = await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-    ].request();
-    final ok = statuses.values.every((s) => s.isGranted || s.isLimited);
-    if (!ok && mounted) {
-      setState(() => _error = 'Bluetooth permissions denied.');
+    try {
+      final sdkInt = await _platform.invokeMethod<int>('androidSdkInt');
+      if (sdkInt == null) throw StateError('Unable to determine Android version');
+      final permissions = sdkInt >= 31
+          ? [Permission.bluetoothScan, Permission.bluetoothConnect]
+          : [Permission.locationWhenInUse];
+      final statuses = await permissions.request();
+      final ok = statuses.values.every((s) => s.isGranted || s.isLimited);
+      if (!ok && mounted) {
+        setState(() => _error = 'Bluetooth scan permission denied. Allow it in app settings.');
+      }
+      if (ok && sdkInt < 31) {
+        final locationService = await Permission.location.serviceStatus;
+        if (!locationService.isEnabled) {
+          if (mounted) {
+            setState(() => _error = 'Enable Location services to scan for BLE devices.');
+          }
+          return false;
+        }
+      }
+      return ok;
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Unable to check Bluetooth permissions: $e');
+      return false;
     }
-    return ok;
   }
 
   Future<bool> _ensureAdapterOn() async {
@@ -96,7 +149,10 @@ class _ScanScreenState extends State<ScanScreen> {
         // The adapterState listener in initState will call _maybeStartScan when
         // it actually transitions to on; bail here so we don't double-scan.
         return false;
-      } catch (_) {}
+      } catch (e) {
+        if (mounted) setState(() => _error = 'Unable to enable Bluetooth: $e');
+        return false;
+      }
     }
     if (mounted) setState(() => _error = 'Bluetooth is off — enable it and retry.');
     return false;
@@ -108,14 +164,24 @@ class _ScanScreenState extends State<ScanScreen> {
       _error = null;
       _results = [];
     });
+    _pendingResults = null;
+    _resultUpdateTimer?.cancel();
+    _resultUpdateTimer = null;
     _resultsSub?.cancel();
     _resultsSub = _client.scan().listen((rs) {
-      if (!mounted) return;
-      setState(() => _results = rs);
-      // Auto-connect when exactly one device is visible.
-      if (rs.length == 1 && !_connecting) _connect(rs.first.device);
+      _pendingResults = rs;
+      if (_resultUpdateTimer != null) return;
+      _resultUpdateTimer = Timer(const Duration(milliseconds: 200), () {
+        _resultUpdateTimer = null;
+        if (mounted) setState(() => _results = _pendingResults ?? []);
+      });
     }, onError: (e) {
-      if (mounted) setState(() => _error = 'scan error: $e');
+      _scanStarting = false;
+      _resultUpdateTimer?.cancel();
+      _resultUpdateTimer = null;
+      if (mounted) {
+        setState(() => _error = 'BLE scan failed: $e');
+      }
     });
   }
 
@@ -126,31 +192,50 @@ class _ScanScreenState extends State<ScanScreen> {
       _error = null;
       _connecting = true;
     });
+    var dialogVisible = true;
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (_) => const Center(child: CircularProgressIndicator()),
     );
     DeviceController? controller;
+    ApiServer? api;
+    var apiAttached = false;
     try {
+      final resultsSub = _resultsSub;
+      _resultsSub = null;
+      await resultsSub?.cancel();
       final conn = await _client.connect(device);
       controller = DeviceController(conn);
-      if (!mounted) return;
-      final api = context.read<ApiServer>();
+      if (!mounted) {
+        await conn.disconnect();
+        return;
+      }
+      api = context.read<ApiServer>();
       api.attach(controller);
+      apiAttached = true;
       Navigator.of(context).pop(); // dismiss spinner
+      dialogVisible = false;
       await Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => DeviceScreen(controller: controller!)),
       );
-      api.detach();
       // Await the full BLE teardown so the ESP32 receives a clean disconnect
       // and restarts advertising before we scan again.
       await controller.conn.disconnect();
     } catch (e) {
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      setState(() => _error = '$e');
+      if (mounted) {
+        if (dialogVisible) {
+          Navigator.of(context).pop();
+          dialogVisible = false;
+        }
+        setState(() => _error = 'BLE connection failed: $e');
+      }
     } finally {
+      if (apiAttached) api!.detach();
+      if (dialogVisible && mounted) {
+        Navigator.of(context).pop();
+        dialogVisible = false;
+      }
       controller?.dispose();
       if (mounted) {
         setState(() => _connecting = false);
@@ -172,9 +257,13 @@ class _ScanScreenState extends State<ScanScreen> {
             tooltip: _scanning ? 'Stop scan' : 'Scan',
             onPressed: () {
               if (_scanning) {
+                _autoRescan = false;
                 _rescanTimer?.cancel();
-                _client.stopScan();
+                unawaited(_client.stopScan().catchError((Object error) {
+                  if (mounted) setState(() => _error = 'Unable to stop BLE scan: $error');
+                }));
               } else {
+                _autoRescan = true;
                 _maybeStartScan();
               }
             },

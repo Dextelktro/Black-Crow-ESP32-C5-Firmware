@@ -11,13 +11,17 @@ are included in this repo:
 
 | Front-end | Path | Notes |
 |-----------|------|-------|
-| ESP32-C5 firmware | `esp32-c5/` | The radio. ESP-IDF project for the Seeed XIAO ESP32-C5. |
+| ESP32-C5 firmware | `esp32-c5/` | The radio. ESP-IDF project configured for ESP32-C5 N16R8 (16 MB flash, 8 MB quad PSRAM). |
 | Flutter app | `flutter/` | Android / Linux desktop. Full-featured (whitelist, blacklist, nuke, console). |
 | Garmin watch app | `garmin/` | Connect IQ app for the Fenix 7 series. Minimal: scan → list networks → deauth. |
 
 The radio and the controllers speak the Nordic UART Service (NUS) BLE
 profile with a simple line-buffered text protocol. See
 `esp32-c5/README.md` for the protocol reference.
+The ESP32-C5 advertises the NUS service UUID for phone-side BLE filtering and
+shows as `Radio C5` in the Flutter app's scan list. On Android 6–11,
+BLE scanning also requires Location permission and the Location service;
+Android 12+ uses Nearby devices permission.
 
 ## Screenshots & demos
 
@@ -25,10 +29,11 @@ profile with a simple line-buffered text protocol. See
 |----------------|-----------|
 | <img src="screenshots/panel1-deauth-wifi-routers.png" alt="Networks tab" width="320"> | <img src="screenshots/panel2-nuke-all-routers.gif" alt="Nuke radar in action" width="320"> |
 
-The Networks panel sorts scanned APs by band and signal, and lets you
-tick individual targets before pressing **Deauth**. The Nuke tab clip
-shows the radar view that drives every visible AP simultaneously for a
-chosen duration.
+The Flutter Home screen opens **Network Target & Monitoring**, **BLE Scan**,
+**Nuke**, **Deauth All**, and **BLE Spam** as separate tool screens. The
+network panel sorts scanned APs by band and signal, and lets you tick
+individual targets before pressing **Deauth**. The Nuke demo shows the radar
+view for a chosen duration.
 
 ---
 
@@ -98,9 +103,11 @@ key (see `garmin/run-fenix7pro.sh`).
 
 ## Hardware
 
-- **Seeed Studio XIAO ESP32-C5** — see `specs.md`. Other ESP32-C5 boards
-  should work; only the on-board LED GPIO would need adjustment in
-  `esp32-c5/main/led.c`.
+- **ESP32-C5 N16R8** (16 MB flash, 8 MB quad PSRAM) is the firmware's
+  default hardware target. Other ESP32-C5 boards require matching flash,
+  PSRAM, and partition settings; the on-board LED GPIO may also need
+  adjustment in `esp32-c5/main/led.c`. See `specs.md` for the XIAO reference
+  board's hardware details.
 - USB-C cable (data, not charge-only) for flashing.
 - (Optional) Garmin Fenix 7 family watch.
 

@@ -11,7 +11,30 @@ idf_component_register(
         "acl.c"
         "sniffer.c"
         "attack.c"
+        "ble_spam.c"
+        "ble_scanner.c"
+        "ble_spectrum.c"
+        "ble_wardrive.c"
+        "nrf24_driver.c"
+        "nrf24_scanner.c"
+        "nrf24_jammer.c"
+        "nrf24_sniffer.c"
+        "nrf24_mousejack.c"
+        "nrf24.c"
+        "monitor.c"
+        "spectrum.c"
+        "wifi_live_scan.c"
+        "wifi_spam.c"
+        "temperature_monitor.c"
+        "sys_monitor.c"
         "led.c"
+        "ir_proto.c"
+        "ir_rmt.c"
+        "ir_store.c"
+        "ir_db.c"
+        "ir.c"
+        "storage_fs.c"
+        "evil_portal.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
@@ -23,4 +46,9 @@ idf_component_register(
         vfs
         hal
         bt
+        esp_psram
+        led_strip
+        littlefs
+        esp_http_server
+        esp_driver_tsens
 )

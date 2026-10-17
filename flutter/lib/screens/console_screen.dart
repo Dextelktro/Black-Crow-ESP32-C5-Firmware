@@ -15,11 +15,14 @@ class ConsoleScreen extends StatefulWidget {
 }
 
 class _ConsoleScreenState extends State<ConsoleScreen> {
+  static const int _maxLogChars = 64 * 1024;
+
   final TextEditingController _input = TextEditingController();
   final ScrollController _scroll = ScrollController();
   final StringBuffer _log = StringBuffer();
   StreamSubscription<String>? _sub;
   bool _busy = false;
+  bool _scrollScheduled = false;
 
   // Quick-command palette mirroring the firmware's CLI verbs.
   static const List<String> _quickCmds = [
@@ -45,6 +48,9 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
     _sub = widget.connection.incoming.listen((chunk) {
       if (chunk.isEmpty) return;
       _append(chunk);
+    }, onError: (Object error, StackTrace stackTrace) {
+      debugPrint('BLE console stream failed: $error\n$stackTrace');
+      _append('[BLE stream failed: $error]\n');
     });
     // Greet so the device speaks first.
     Future.microtask(() => _send('help'));
@@ -53,31 +59,51 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
   @override
   void dispose() {
     _sub?.cancel();
-    widget.connection.disconnect();
+    unawaited(widget.connection.disconnect().catchError(
+      (Object error, StackTrace stackTrace) {
+        debugPrint('BLE disconnect failed: $error\n$stackTrace');
+      },
+    ));
     _input.dispose();
     _scroll.dispose();
     super.dispose();
   }
 
   void _append(String s) {
-    setState(() => _log.write(s));
+    if (!mounted) return;
+    _log.write(s);
+    final text = _log.toString();
+    if (text.length > _maxLogChars) {
+      final cutoff = text.length - _maxLogChars;
+      final lineBreak = text.indexOf('\n', cutoff);
+      var start = lineBreak >= 0 ? lineBreak + 1 : cutoff;
+      if (lineBreak < 0 && start > 0 && start < text.length) {
+        final firstCodeUnit = text.codeUnitAt(start);
+        if (firstCodeUnit >= 0xDC00 && firstCodeUnit <= 0xDFFF) start--;
+      }
+      _log
+        ..clear()
+        ..write(text.substring(start));
+    }
+    setState(() {});
+    if (_scrollScheduled) return;
+    _scrollScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollScheduled = false;
+      if (!mounted) return;
       if (!_scroll.hasClients) return;
-      _scroll.animateTo(
-        _scroll.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOut,
-      );
+      _scroll.jumpTo(_scroll.position.maxScrollExtent);
     });
   }
 
   Future<void> _send(String cmd) async {
     cmd = cmd.trim();
-    if (cmd.isEmpty || _busy) return;
+    if (!mounted || cmd.isEmpty || _busy) return;
     setState(() => _busy = true);
     try {
       _append('> $cmd\n');
       await widget.connection.send(cmd);
+      if (!mounted) return;
       _input.clear();
     } catch (e) {
       _append('[send failed: $e]\n');

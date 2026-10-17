@@ -1,0 +1,17 @@
+{
+    "cmake.sourceDirectory": "C:/Users/X1 Carbon/Folder Baru/esp32-c5-deauth/esp32-c5",
+    "idf.currentSetup": "C:\\esp\\v5.5.1\\esp-idf",
+    "idf.openOcdConfigs": [
+        "board/esp32c5-builtin.cfg"
+    ],
+    "idf.customExtraVars": {
+        "OPENOCD_USB_ADAPTER_LOCATION": "1-2"
+    },
+    "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+    "clangd.arguments": [
+      "--background-index",
+      "--query-driver=**",
+      "--compile-commands-dir=c:\\Users\\X1 Carbon\\Folder Baru\\esp32-c5-deauth\\build"
+    ],
+    "idf.port": "COM26"
+}
