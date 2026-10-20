@@ -69,6 +69,10 @@ esp32-c5/
     ├── cli.{c,h}               command parser (transport-agnostic)
     ├── transport_serial.{c,h}  USB-Serial-JTAG TX/RX
     ├── transport_ble.{c,h}     NimBLE NUS GATT peripheral and log transport
+    ??? spi_shared_bus.{c,h}    shared SPI2 host for storage and nRF24
+    ??? sd_storage.{c,h}        SD mount, files, copy, and download
+    ??? esp_flasher.{c,h}       UART target detection and multi-image flashing
+    ??? esp_upload.{c,h}        verified BLE file upload to LittleFS or SD
     ├── nrf24.{c,h}             nRF24L01+ SPI text link
     ├── frames.{c,h}            802.11 deauth / disassoc / auth-flood builders
     ├── wifi_ctrl.{c,h}         STA-mode init + dual-band scan
@@ -120,8 +124,69 @@ ir save <name>                save the last captured signal to LittleFS
 ir ls | ir info <name> | ir rm <name>              saved signal library
 ir emulate <name> [count] | ir emulate stop        replay a saved signal
 ir status                     IR module + storage status
+    "sd status | ls                SD card status and file listing\r\n"
+    "sd mount | unmount | format   mount, safely eject, or format the card\r\n"
+    "sd get <path> | preview <path> download or preview an SD file\r\n"
+    "sd cp-to-lfs <path>           copy an SD file into LittleFS\r\n"
+    "sd cp-from-lfs <path>         copy a LittleFS file onto the SD card\r\n"
+    "espflash status               show UART flasher state\r\n"
+    "espflash flash <lfs|sd> <path> <offset> [chip|auto]\r\n"
+    "espflash batch begin <lfs|sd> <count> <chip|auto>\r\n"
+    "espflash batch image <index-0-based> <path> <offset> | start | abort\r\n"
+    "espflash mkdir <lfs|sd> <path> create an upload directory\r\n"
+    "espflash upload <lfs|sd> <path> <size> <crc32-hex>\r\n"
+    "espflash data <id> <offset> <hex> | finish <id> | cancel <id>\r\n"
+    "espflash cancel-active         remove the current incomplete upload\r\n"
+    "espflash boot | release       assert or release target BOOT (GPIO10)\r\n"
+    "espflash reset                reports unsupported while RESET is -1\r\n"
 reset                         soft-reset the chip (esp_restart)
 ```
+
+### UART ESP flasher
+
+The optional serial flasher uses UART1 (host TX GPIO25, host RX GPIO3), target
+BOOT GPIO10, and no automatic RESET line (`-1`). Cross target TX/RX and share
+ground: host GPIO25 TX -> target UART RX, host GPIO3 RX <- target UART TX.
+Use 3.3 V UART logic. These GPIO assignments must be checked against the exact
+board revision's schematic before wiring. UART0/USB-Serial-JTAG is not claimed;
+UART1 is installed only for a flash session and its driver is deleted on exit.
+The flasher refuses to start if UART1 already has a driver.
+
+Manual flash accepts up to three images in one operation, each with its own
+image-specific offset, and optionally a chip profile. The target is detected
+once; all source files, ranges, and offset overlaps are checked before the
+first erase/write. Images are written sequentially and verified individually
+before the next begins where target-side MD5 verification is supported
+(ESP8266 ROM does not provide it). A failure stops the batch and is reported
+explicitly; already written images cannot be rolled back. Data is streamed in
+1 KiB blocks using PSRAM; UART/loader/task resources remain allocated only for
+the active operation.
+
+The Flutter flasher can select multiple files or an entire directory on Android
+and desktop, then upload the selection to LittleFS or SD. Android folder
+selection uses the Storage Access Framework and stages copies in app cache
+without buffering files in RAM; the cache copies are removed after the
+operation. Each file is streamed through the text NUS CLI in bounded
+hexadecimal chunks (108 binary bytes per command), strict offsets, idempotent
+retry of the last chunk, and CRC32 verification. A file is committed from its
+`.part` file only after size and CRC verification; existing destination files
+are never overwritten. Nested and empty directories are created explicitly.
+Multi-file uploads commit one file at a time, so a later error leaves already
+verified files in place and is reported as a partial transfer. LittleFS mounts
+without formatting non-empty storage. SD uploads require an already mounted
+card and reserve it exclusively only while each chunk is written; no SD lock or
+open file is retained while waiting for the next BLE command. Per-file upload
+size is limited by the ESP-IDF stdio seek range (2 GiB minus one byte).
+If BLE disconnects during a transfer, `espflash status` reports the active
+transfer and its offset; cancel it with `espflash cancel-active` to remove the
+incomplete `.part` file. The Flutter flasher screen queries this status when
+opened and exposes the remote cancellation action.
+
+Quick Flash and Manual Flash use the same batch flow. No BIN profile is bundled
+by this change; use the offsets from the selected firmware's own flash
+configuration, and do not guess offsets for a multi-image firmware. A/B
+switching remains unavailable until verified firmware images and target
+partition/OTA manifests are packaged.
 
 Universal sweeps report only completed RMT sends as `TX`; failed encodes or
 transmissions are reported as `TX_FAIL`, and `UNIV_DONE` includes sent and
@@ -147,6 +212,41 @@ The peer must use channel 76, 1 Mbps, the 5-byte address
 `E7:D3:F4:A1:B2`, and auto-ack on pipe 0. Received messages are printed to the
 serial/BLE log transports. `nrf24 status` reports whether initialization
 succeeded.
+
+### Shared SPI and SD card
+
+The SD card and nRF24L01+ share SPI2. The firmware initializes the
+bus, mounts a detected SD card, and only then probes the nRF24 radio; if a
+detected card cannot be mounted, radio SPI access stays blocked to avoid
+clocks reaching a card that has not entered SPI mode.
+
+| Signal | ESP32-C5 GPIO | SPI clock |
+|--------|---------------|-----------|
+| SCK / MISO / MOSI | 6 / 2 / 7 | Shared bus |
+| SD CS / card detect (CD) | 1 / 0 | Up to 20 MHz |
+| nRF24 CSN / CE | 9 / 8 | 4 MHz |
+
+CD is active-low and uses an ESP internal pull-up. Confirm the card socket's
+CD switch is wired to ground when a card is inserted. The SD card's CMD and
+DAT lines require pull-ups (typically 10 kOhm); the CD pull-up is separate.
+GPIO7 is also an ESP32-C5 JTAG-source strapping pin. Its default eFuse
+configuration ignores the strap, but if JTAG source selection is enabled by
+eFuse, the SD CMD pull-up biases GPIO7 high during reset and can select the
+USB Serial/JTAG source. Verify the board's eFuse/debug configuration before
+relying on pad-JTAG.
+Both CS lines are held high while idle. Keep the SPI wiring short and
+let the ESP-IDF SPI/SD drivers generate SCK only for transactions. The SD SPI
+driver is configured for up to 20 MHz; Espressif notes that shared-bus loading
+can require a lower rate, so verify signal integrity on the assembled hardware.
+
+`sd format` is destructive and requires explicit confirmation in the app. It
+can format a detected card even when the existing FAT filesystem cannot be
+mounted. `sd cp-to-lfs` and `sd cp-from-lfs` copy files in either direction.
+The app downloads SD files to the platform Downloads folder; preview is
+limited to 2 KiB. Use `sd unmount` before physically removing a mounted card.
+See Espressif's [SD SPI sharing](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c5/api-reference/peripherals/sdspi_share.html),
+[SD pull-up requirements](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c5/api-reference/peripherals/sd_pullup_requirements.html),
+and [ESP32-C5 boot configuration](https://documentation.espressif.com/esp32-c5_datasheet_en.html#page=36);
 
 ### Infrared (universal remote + receiver)
 

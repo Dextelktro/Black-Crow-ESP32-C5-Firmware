@@ -23,6 +23,34 @@ class FsBrowserScreen extends StatefulWidget {
 }
 
 class _FsBrowserScreenState extends State<FsBrowserScreen> {
+  Widget _folderTile(DeviceController controller, FsDirectory directory) {
+    return ListTile(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: _kAccent.withValues(alpha: 0.3)),
+      ),
+      tileColor: Colors.white.withValues(alpha: 0.03),
+      leading: const Icon(Icons.folder_outlined, color: _kAccent),
+      title: Text(
+        directory.path,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: Colors.white, fontSize: 14),
+      ),
+      subtitle: const Text('Folder'),
+      trailing: IconButton(
+        tooltip: 'Folder actions',
+        icon: const Icon(Icons.more_vert, color: Colors.white70),
+        onPressed: controller.fsListing
+            ? null
+            : () => _showFolderActions(controller, directory),
+      ),
+      onTap: controller.fsListing
+          ? null
+          : () => _showFolderActions(controller, directory),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -36,18 +64,148 @@ class _FsBrowserScreenState extends State<FsBrowserScreen> {
     try {
       await f;
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Failed: $e')));
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('Failed: $e')));
+      }
     }
+  }
+
+  Future<void> _createFolder(DeviceController controller) async {
+    final name = TextEditingController();
+    final folderName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Create folder'),
+        content: TextField(
+          controller: name,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Folder name',
+            hintText: 'firmware',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, name.text.trim()),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    name.dispose();
+    if (folderName == null || folderName.isEmpty) return;
+    await _guard(controller.fsCreateDirectory(folderName));
+  }
+
+  Future<void> _showFolderActions(
+    DeviceController controller,
+    FsDirectory directory,
+  ) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline),
+              title: const Text('Rename folder'),
+              onTap: () => Navigator.pop(context, 'rename'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: const Text('Delete folder and contents'),
+              onTap: () => Navigator.pop(context, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'rename') {
+      await _renameFolder(controller, directory.path);
+    } else if (action == 'delete') {
+      await _confirmDeleteFolder(controller, directory.path);
+    }
+  }
+
+  Future<void> _renameFolder(
+    DeviceController controller,
+    String oldPath,
+  ) async {
+    final oldName = oldPath.split('/').last;
+    final name = TextEditingController(text: oldName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rename folder'),
+        content: TextField(
+          controller: name,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'New folder name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, name.text.trim()),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+    name.dispose();
+    if (newName == null || newName.isEmpty || newName == oldName) return;
+    final parent = oldPath.contains('/')
+        ? '${oldPath.substring(0, oldPath.lastIndexOf('/'))}/'
+        : '';
+    await _guard(controller.fsRename(oldPath, '$parent$newName'));
+  }
+
+  Future<void> _confirmDeleteFolder(
+    DeviceController controller,
+    String path,
+  ) async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete folder and contents?'),
+        content: Text(
+          'This permanently deletes "$path" and every file and subfolder inside it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true) await _guard(controller.fsDelete(path));
   }
 
   @override
   Widget build(BuildContext context) {
     final ctrl = context.watch<DeviceController>();
-    final files = ctrl.fsFiles;
+    final entryCount = ctrl.fsFiles.length + ctrl.fsDirectories.length;
     return Scaffold(
       appBar: AppBar(
         title: const Text('LittleFS Files'),
         actions: [
+          IconButton(
+            tooltip: 'Create folder',
+            icon: const Icon(Icons.create_new_folder_outlined),
+            onPressed: ctrl.fsListing ? null : () => _createFolder(ctrl),
+          ),
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
@@ -59,13 +217,21 @@ class _FsBrowserScreenState extends State<FsBrowserScreen> {
         children: [
           _usageHeader(ctrl),
           Expanded(
-            child: files.isEmpty
+            child: entryCount == 0
                 ? _empty(ctrl)
                 : ListView.separated(
                     padding: const EdgeInsets.all(14),
-                    itemCount: files.length,
+                    itemCount: entryCount,
                     separatorBuilder: (_, _) => const SizedBox(height: 10),
-                    itemBuilder: (_, i) => _tile(ctrl, files[i]),
+                    itemBuilder: (_, i) {
+                      if (i < ctrl.fsDirectories.length) {
+                        return _folderTile(ctrl, ctrl.fsDirectories[i]);
+                      }
+                      return _tile(
+                        ctrl,
+                        ctrl.fsFiles[i - ctrl.fsDirectories.length],
+                      );
+                    },
                   ),
           ),
         ],
@@ -200,6 +366,14 @@ class _FsBrowserScreenState extends State<FsBrowserScreen> {
                 ),
               ],
             ),
+          ),
+          IconButton(
+            tooltip: 'Copy to SD card',
+            icon: const Icon(Icons.sd_storage_outlined, size: 20),
+            color: _kAccent,
+            onPressed: !ctrl.sdMounted || ctrl.sdBusy
+                ? null
+                : () => _guard(ctrl.fsCopyToSd(f.path)),
           ),
           IconButton(
             tooltip: 'Delete',

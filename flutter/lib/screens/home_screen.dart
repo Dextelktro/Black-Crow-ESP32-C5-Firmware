@@ -11,10 +11,12 @@ import 'ble_spam_screen.dart';
 import 'ble_spectrum_screen.dart';
 import 'ble_wardrive_screen.dart';
 import 'deauth_all_screen.dart';
+import 'esp_flasher_screen.dart';
 import 'device_screen.dart';
 import 'findmy_screen.dart';
 import 'evil_portal_screen.dart';
 import 'fs_browser_screen.dart';
+import 'sd_storage_screen.dart';
 import 'ir_hub_screen.dart';
 import 'led_screen.dart';
 import 'nrf24_hub_screen.dart';
@@ -35,12 +37,15 @@ class HomeBody extends StatefulWidget {
 
 class _HomeBodyState extends State<HomeBody> {
   Timer? _ticker;
+  int _syncTick = 0;
 
   @override
   void initState() {
     super.initState();
     _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() => _syncTick = (_syncTick + 1) % 4);
+      }
     });
   }
 
@@ -448,6 +453,38 @@ class _HomeBodyState extends State<HomeBody> {
           subtitle: 'Browse & delete stored files — IR signals, portal data',
           onTap: () => _push(context, ctrl, const FsBrowserScreen()),
         ),
+        const SizedBox(height: 10),
+        _ToolRow(
+          icon: ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
+          leadingWidget: ctrl.sdBusy
+              ? Transform.rotate(
+                  angle: _syncTick * 1.57079632679,
+                  child: const Icon(Icons.sync, color: Color(0xFF4FA8FF), size: 24),
+                )
+              : Icon(
+                  ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
+                  color: ctrl.sdPresent ? const Color(0xFF4FA8FF) : Colors.amber,
+                  size: 24,
+                ),
+          color: ctrl.sdPresent ? const Color(0xFF4FA8FF) : Colors.amber,
+          title: 'SD Card',
+          subtitle: ctrl.sdBusy
+              ? 'Synchronizing · ${ctrl.sdTransferSentBytes} bytes transferred'
+              : ctrl.sdPresent
+              ? ctrl.sdMounted
+                  ? '${_fmtBytes(ctrl.sdFree)} free / ${_fmtBytes(ctrl.sdTotal)} · tap to browse'
+                  : 'Card detected · tap to mount or inspect'
+              : 'No card detected',
+          onTap: () => _push(context, ctrl, const SdStorageScreen()),
+        ),
+        const SizedBox(height: 14),
+        _ToolRow(
+          icon: Icons.memory,
+          color: const Color(0xFF2EE6C5),
+          title: 'ESP Flasher UART',
+          subtitle: 'Serial flash, BOOT control and BIN transfer',
+          onTap: () => _push(context, ctrl, const EspFlasherScreen()),
+        ),
         const SizedBox(height: 14),
 
         // ── Theme + LED row ──────────────────────────────────
@@ -742,6 +779,7 @@ class _TileCard extends StatelessWidget {
 class _ToolRow extends StatelessWidget {
   const _ToolRow({
     required this.icon,
+    this.leadingWidget,
     required this.color,
     required this.title,
     required this.subtitle,
@@ -749,6 +787,7 @@ class _ToolRow extends StatelessWidget {
   });
 
   final IconData icon;
+  final Widget? leadingWidget;
   final Color color;
   final String title;
   final String subtitle;
@@ -777,7 +816,7 @@ class _ToolRow extends StatelessWidget {
                   color: color.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Icon(icon, color: color, size: 24),
+                child: leadingWidget ?? Icon(icon, color: color, size: 24),
               ),
               const SizedBox(width: 14),
               Expanded(

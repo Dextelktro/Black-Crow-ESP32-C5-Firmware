@@ -34,11 +34,18 @@ esp_err_t nrf24_module_init(void)
     err = nrf24_sniffer_init();
     if (err != ESP_OK) {
         io_log("nrf24: sniffer init failed (%d)\r\n", err);
+        nrf24_power_down();
         return err;
     }
     nrf24_mousejack_init();
 
     nrf24_dump_status();
+    err = nrf24_power_down();
+    if (err != ESP_OK) {
+        io_log("nrf24: initial power-down failed (%s)\r\n",
+               esp_err_to_name(err));
+        return err;
+    }
     io_log("nrf24: module ready\r\n");
     s_ready = true;
     return ESP_OK;

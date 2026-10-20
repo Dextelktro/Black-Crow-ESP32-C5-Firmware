@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
+#include "spi_shared_bus.h"
 
 static const char *TAG = "nrf24";
 
@@ -57,6 +58,7 @@ static inline void ce_high(void)  { gpio_set_level(s_ctx.pin_ce, 1); }
 static esp_err_t spi_xfer(const uint8_t *tx, uint8_t *rx, size_t len)
 {
     if (!s_ctx.spi) return ESP_ERR_INVALID_STATE;
+    if (!spi_shared_bus_radio_access_allowed()) return ESP_ERR_INVALID_STATE;
     if (len == 0) return ESP_OK;
     if (len > 64) return ESP_ERR_INVALID_SIZE;
 
@@ -73,9 +75,16 @@ static esp_err_t spi_xfer(const uint8_t *tx, uint8_t *rx, size_t len)
         .rx_buffer = rx_buf,
     };
 
+    esp_err_t err = spi_device_acquire_bus(s_ctx.spi, portMAX_DELAY);
+    if (err != ESP_OK) return err;
+    if (!spi_shared_bus_radio_access_allowed()) {
+        spi_device_release_bus(s_ctx.spi);
+        return ESP_ERR_INVALID_STATE;
+    }
     csn_low();
-    esp_err_t err = spi_device_polling_transmit(s_ctx.spi, &t);
+    err = spi_device_polling_transmit(s_ctx.spi, &t);
     csn_high();
+    spi_device_release_bus(s_ctx.spi);
 
     if (err != ESP_OK) return err;
     if (rx) memcpy(rx, rx_buf, len);
@@ -148,7 +157,8 @@ bool nrf24_radio_busy(void)
 
 bool nrf24_radio_claim(const char *owner)
 {
-    if (!s_radio_owner) return false;
+    if (!s_radio_owner || !s_ctx.initialized || !s_ctx.present ||
+        !spi_shared_bus_radio_access_allowed()) return false;
 
     /* FIX H1: fail-fast — timeout 0, tidak blocking */
     if (xSemaphoreTake(s_radio_owner, 0) != pdTRUE) {
@@ -160,6 +170,12 @@ bool nrf24_radio_claim(const char *owner)
             sizeof(s_radio_owner_name) - 1);
     s_radio_owner_name[sizeof(s_radio_owner_name) - 1] = '\0';
     ESP_LOGI(TAG, "radio claimed by %s", s_radio_owner_name);
+    if (nrf24_power_up() != ESP_OK) {
+        s_radio_owned = false;
+        s_radio_owner_name[0] = '\0';
+        xSemaphoreGive(s_radio_owner);
+        return false;
+    }
     return true;
 }
 
@@ -167,6 +183,11 @@ void nrf24_radio_release(void)
 {
     if (!s_radio_owner) return;
     if (!s_radio_owned) return;
+    esp_err_t power_err = nrf24_power_down();
+    if (power_err != ESP_OK) {
+        ESP_LOGW(TAG, "power-down on release failed: %s",
+                 esp_err_to_name(power_err));
+    }
     ESP_LOGI(TAG, "radio released (was %s)", s_radio_owner_name);
     s_radio_owned = false;
     s_radio_owner_name[0] = '\0';
@@ -235,10 +256,12 @@ esp_err_t nrf24_init(const nrf24_pins_t *pins)
         .max_transfer_sz = 64,
     };
 
-    err = spi_bus_initialize(NRF24_SPI_HOST, &bus, SPI_DMA_DISABLED);
-    if (err == ESP_OK) s_ctx.bus_owned = true;
-    else if (err == ESP_ERR_INVALID_STATE) s_ctx.bus_owned = false;
-    else goto fail;
+    if (!spi_shared_bus_is_ready()) {
+        err = spi_bus_initialize(NRF24_SPI_HOST, &bus, SPI_DMA_DISABLED);
+        if (err == ESP_OK) s_ctx.bus_owned = true;
+        else if (err == ESP_ERR_INVALID_STATE) s_ctx.bus_owned = false;
+        else goto fail;
+    }
 
     spi_device_interface_config_t dev = {
         .clock_speed_hz = clk,

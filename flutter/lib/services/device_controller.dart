@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -203,6 +205,57 @@ class FsFile {
   final int size; // bytes
 }
 
+class FsDirectory {
+  FsDirectory({required this.path});
+
+  final String path;
+}
+
+class SdFile {
+  SdFile({required this.path, required this.size});
+
+  final String path;
+  final int size;
+}
+
+class EspFlashDeviceImage {
+  const EspFlashDeviceImage({required this.path, required this.size});
+
+  final String path;
+  final int size;
+}
+
+class EspFlashBatchImage {
+  const EspFlashBatchImage({required this.path, required this.offset});
+
+  final String path;
+  final int offset;
+}
+
+class SdTransferResult {
+  const SdTransferResult({
+    required this.totalBytes,
+    required this.transferredBytes,
+    required this.truncated,
+  });
+
+  final int totalBytes;
+  final int transferredBytes;
+  final bool truncated;
+}
+
+class EspFlashUploadSource {
+  const EspFlashUploadSource({
+    required this.path,
+    required this.length,
+    required this.openRead,
+  });
+
+  final String path;
+  final int length;
+  final Stream<List<int>> Function() openRead;
+}
+
 class _ByteSample {
   const _ByteSample(this.timestamp, this.bytes);
 
@@ -217,6 +270,13 @@ class DeviceController extends ChangeNotifier {
   static const int _maxFramesKept = 50;
   static const Duration _sendTimeout = Duration(seconds: 8);
   static const Duration _throughputWindow = Duration(seconds: 1);
+  static final List<int> _crc32Table = List<int>.generate(256, (value) {
+    var crc = value;
+    for (var bit = 0; bit < 8; bit++) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+    return crc & 0xffffffff;
+  }, growable: false);
 
   DeviceController(this.conn) {
     _sub = conn.incoming.listen(
@@ -250,7 +310,12 @@ class DeviceController extends ChangeNotifier {
       sysCpuUsagePercent = null;
       sysUpdatedAt = null;
       fsFiles = const [];
+      fsDirectories = const [];
       fsListing = false;
+      sdFiles = const [];
+      sdListing = false;
+      sdBusy = false;
+      _failSdTransfer(StateError('BLE connection lost during SD transfer.'));
       wlscanRunning = false;
       spectrumRunning = false;
       bleSpectrumRunning = false;
@@ -279,6 +344,7 @@ class DeviceController extends ChangeNotifier {
       'dev ls',
       'nrf status',
       'ir status',
+      'sd status',
     ]) {
       unawaited(_sendCommand(command).catchError((Object _) {}));
     }
@@ -375,10 +441,57 @@ class DeviceController extends ChangeNotifier {
 
   // LittleFS file browser (Home "LittleFS Files" manager).
   List<FsFile> fsFiles = const [];
+  List<FsDirectory> fsDirectories = const [];
   int fsTotal = 0; // partition bytes
   int fsUsed = 0;
   bool fsListing = false;
   final List<FsFile> _fsTmp = [];
+  final List<FsDirectory> _fsDirectoriesTmp = [];
+  Completer<String>? _fsOperationReply;
+  String? _fsOperationReplyPrefix;
+
+  bool sdPresent = false;
+  bool sdMounted = false;
+  bool sdBusy = false;
+  bool sdListing = false;
+  int sdTotal = 0;
+  int sdUsed = 0;
+  int sdFree = 0;
+  List<SdFile> sdFiles = const [];
+  final List<SdFile> _sdTmp = [];
+  Completer<SdTransferResult>? _sdTransferCompleter;
+  Future<void> Function(Uint8List bytes)? _sdChunkWriter;
+  Future<void> _sdWriteQueue = Future<void>.value();
+  int _sdTransferId = 0;
+  int _sdExpectedOffset = 0;
+  int _sdTotalBytes = 0;
+  int _sdSentBytes = 0;
+  int get sdTransferTotalBytes => _sdTotalBytes;
+  int get sdTransferSentBytes => _sdSentBytes;
+  Completer<String>? _espFlashReply;
+  String? _espFlashReplyPrefix;
+  Completer<void>? _espFlashStorageListing;
+  String? _espFlashStorageListingError;
+  final Map<int, Completer<void>> _espFlashChunkReplies = {};
+  int? _espFlashPendingTransferId;
+  Completer<String>? _espFlashChunkFailure;
+  bool espFlashUploading = false;
+  bool _espFlashUploadCancelRequested = false;
+  int espFlashUploadBytes = 0;
+  int espFlashUploadTotalBytes = 0;
+  int espFlashUploadFileIndex = 0;
+  int espFlashUploadFileCount = 0;
+  int espFlashUploadCompletedFiles = 0;
+  String espFlashUploadPath = '';
+  String espFlashState = 'idle';
+  String espFlashMessage = '';
+  int espFlashProgrammedBytes = 0;
+  int espFlashImageBytes = 0;
+  bool espFlashBootAsserted = false;
+  bool espFlashCancelRequested = false;
+  int? espFlashRemoteUploadId;
+  int espFlashRemoteUploadOffset = 0;
+  int espFlashRemoteUploadSize = 0;
 
   // WiFi Live Scan (wardriving)
   bool wlscanRunning = false;
@@ -616,9 +729,14 @@ class DeviceController extends ChangeNotifier {
     return secs;
   }
 
-  Future<void> _sendCommand(String command) async {
+  Future<void> _sendCommand(
+    String command, {
+    bool preferWithoutResponse = false,
+  }) async {
     try {
-      await conn.send(command).timeout(_sendTimeout);
+      await conn
+          .send(command, preferWithoutResponse: preferWithoutResponse)
+          .timeout(_sendTimeout);
       _recordBytes(
         _txSamples,
         utf8.encode(command.endsWith('\n') ? command : '$command\n').length,
@@ -899,10 +1017,10 @@ class DeviceController extends ChangeNotifier {
   );
   // TX logs are emitted only after the RMT transaction completes successfully.
   static final _reIrTx = RegExp(
-    r'^ir:\s+TX\s+i=(\d+)/(\d+)\s+brand=(?:"(.*?)"|(\S+))\s+proto=(\S+)',
+    r'^ir:\s+TX\s+i=(\d+)/(\d+)(?:\s+t_us=\d+)?\s+brand=(?:"(.*?)"|(\S+))\s+proto=(\S+)',
   );
   static final _reIrTxFail = RegExp(
-    r'^ir:\s+TX_FAIL\s+i=(\d+)/(\d+)\s+brand="(.*?)"\s+err=(-?\d+)',
+    r'^ir:\s+TX_FAIL\s+i=(\d+)/(\d+)(?:\s+t_us=\d+)?\s+brand="(.*?)"\s+err=(-?\d+)',
   );
   static final _reIrUnivDone = RegExp(
     r'^ir:\s+UNIV_DONE\s+cat=(\S+)\s+btn=(\S+)\s+sent=(\d+)(?:\s+failed=(\d+))?(?:\s+stopped=(\d+))?',
@@ -943,10 +1061,26 @@ class DeviceController extends ChangeNotifier {
   );
   static final _reFsLs = RegExp(r'^fs:\s+LS\s+total=(\d+)\s+used=(\d+)');
   static final _reFsEnt = RegExp(r'^fs:\s+ENT\s+path="(.*)"\s+size=(\d+)');
+  static final _reFsDir = RegExp(r'^fs:\s+DIR\s+path="(.*)"$');
   static final _reFsInfo = RegExp(
     r'^fs:\s+INFO\s+total=(\d+)\s+used=(\d+)\s+free=(\d+)',
   );
   static final _reFsRm = RegExp(r'^fs:\s+RM\s+path="(.*)"\s+(ok|notfound|bad)');
+  static final _reSdStatus = RegExp(
+    r'^sd:\s+STATUS present=(\d+) mounted=(\d+) busy=(\d+) safe=(\d+) total=(\d+) used=(\d+) free=(\d+)',
+  );
+  static final _reSdLs = RegExp(r'^sd:\s+LS total=(\d+) used=(\d+) free=(\d+)');
+  static final _reSdEnt = RegExp(r'^sd:\s+ENT path="(.*)" size=(\d+)');
+  static final _reSdGetBegin = RegExp(
+    r'^sd:\s+GET_BEGIN id=(\d+) size=(\d+) sent=(\d+)',
+  );
+  static final _reSdData = RegExp(
+    r'^sd:\s+DATA id=(\d+) off=(\d+) n=(\d+) crc=([0-9a-fA-F]{8}) hex=([0-9a-fA-F]+)$',
+  );
+  static final _reSdGetEnd = RegExp(
+    r'^sd:\s+GET_END id=(\d+) size=(\d+) sent=(\d+) truncated=(\d+)',
+  );
+  static final _reSdGetError = RegExp(r'^sd:\s+GET_ERROR id=(\d+) err=(.+)$');
   static final _reStaLine = RegExp(
     r'^sta:\s+([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})\s+(-?\d+)\s+(\d+)\s+([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})',
   );
@@ -1090,6 +1224,123 @@ class DeviceController extends ChangeNotifier {
 
   void _parseLine(String line) {
     if (line.isEmpty) return;
+    final fsReply = _fsOperationReply;
+    final fsPrefix = _fsOperationReplyPrefix;
+    if (fsReply != null &&
+        !fsReply.isCompleted &&
+        fsPrefix != null &&
+        line.startsWith(fsPrefix)) {
+      fsReply.complete(line);
+    }
+    if (line.startsWith('espflash:')) {
+      final reply = _espFlashReply;
+      final prefix = _espFlashReplyPrefix;
+      final body = line.substring('espflash:'.length).trim();
+      espFlashMessage = body;
+      final chunkAck = RegExp(r'^ACK id=(\d+) offset=(\d+)$').firstMatch(body);
+      if (chunkAck != null &&
+          int.tryParse(chunkAck.group(1)!) == _espFlashPendingTransferId) {
+        final ackOffset = int.tryParse(chunkAck.group(2)!);
+        final ack = ackOffset == null
+            ? null
+            : _espFlashChunkReplies.remove(ackOffset);
+        if (ack != null && !ack.isCompleted) ack.complete();
+      }
+      if (body.startsWith('ERROR')) {
+        final failure = _espFlashChunkFailure;
+        if (failure != null && !failure.isCompleted) failure.complete(body);
+      }
+      if (body.startsWith('DETECTING')) {
+        espFlashState = 'detecting';
+      } else if (body.startsWith('ACCEPTED') ||
+          body.startsWith('flash session started')) {
+        espFlashState = 'waiting';
+      } else if (body.startsWith('connected to')) {
+        espFlashState = 'flashing';
+      } else if (body.startsWith('programmed ')) {
+        final progress = RegExp(
+          r'^programmed (\d+)/(\d+) bytes',
+        ).firstMatch(body);
+        if (progress != null) {
+          espFlashProgrammedBytes = int.tryParse(progress.group(1)!) ?? 0;
+          espFlashImageBytes = int.tryParse(progress.group(2)!) ?? 0;
+          espFlashState = 'flashing';
+        }
+      } else if (body == 'DONE result=ok') {
+        espFlashState = 'complete';
+        espFlashMessage =
+            'All selected images finished. Reset the target manually to boot them.';
+      } else if (body == 'DONE result=failed' ||
+          body.startsWith('ERROR') ||
+          body.startsWith('connection failed') ||
+          body.startsWith('flash finish/verification failed')) {
+        espFlashState = espFlashCancelRequested ? 'cancelled' : 'failed';
+        espFlashCancelRequested = false;
+      } else if (body == 'CANCEL_REQUESTED') {
+        espFlashCancelRequested = true;
+        espFlashState = 'cancelling';
+      } else if (body.startsWith('STATUS ')) {
+        final status = RegExp(
+          r'^STATUS busy=(\d+) cancel=(\d+) boot=(\d+) upload=(\d+) id=(\d+) offset=(\d+) size=(\d+) flash=(none|running|ok|failed|cancelled) progress=(\d+) total=(\d+)$',
+        ).firstMatch(body);
+        if (status != null) {
+          espFlashCancelRequested = status.group(2) == '1';
+          espFlashBootAsserted = status.group(3) == '1';
+          final uploadActive = status.group(4) == '1';
+          espFlashRemoteUploadId = uploadActive
+              ? int.tryParse(status.group(5)!)
+              : null;
+          espFlashRemoteUploadOffset = int.tryParse(status.group(6)!) ?? 0;
+          espFlashRemoteUploadSize = int.tryParse(status.group(7)!) ?? 0;
+          espFlashProgrammedBytes = int.tryParse(status.group(9)!) ?? 0;
+          espFlashImageBytes = int.tryParse(status.group(10)!) ?? 0;
+          switch (status.group(8)) {
+            case 'running':
+              espFlashState = espFlashCancelRequested
+                  ? 'cancelling'
+                  : espFlashState == 'detecting' && espFlashProgrammedBytes == 0
+                  ? 'detecting'
+                  : 'flashing';
+            case 'ok':
+              espFlashState = 'complete';
+              espFlashCancelRequested = false;
+            case 'failed':
+              espFlashState = 'failed';
+              espFlashCancelRequested = false;
+            case 'cancelled':
+              espFlashState = 'cancelled';
+              espFlashCancelRequested = false;
+            case 'none':
+              if (status.group(1) == '0') {
+                espFlashState = 'idle';
+                espFlashCancelRequested = false;
+              } else if (espFlashState != 'idle') {
+                espFlashState = 'unknown';
+                espFlashMessage =
+                    'Device reports a busy flash operation without a stored result.';
+              }
+          }
+        }
+      } else if (body.startsWith('UPLOAD_CANCELLED') ||
+          body.startsWith('UPLOAD_DONE')) {
+        espFlashRemoteUploadId = null;
+        espFlashRemoteUploadOffset = 0;
+        espFlashRemoteUploadSize = 0;
+      }
+      if (reply != null &&
+          !reply.isCompleted &&
+          (line.startsWith('espflash: ERROR') ||
+              line.startsWith('scan: running;') ||
+              (prefix != null && line.startsWith(prefix)))) {
+        reply.complete(line);
+      }
+      if (line.startsWith('espflash: ERROR') ||
+          line == 'espflash: DONE result=failed') {
+        connectionIssue = line;
+      }
+      _scheduleNotify();
+      return;
+    }
     final temperatureMatch = _reChipTemperature.firstMatch(line);
     if (temperatureMatch != null) {
       final temperature = double.tryParse(temperatureMatch.group(1)!);
@@ -1118,11 +1369,94 @@ class DeviceController extends ChangeNotifier {
       _systemNotificationPending = true;
       return;
     }
+    final sdStatusMatch = _reSdStatus.firstMatch(line);
+    if (sdStatusMatch != null) {
+      sdPresent = sdStatusMatch.group(1) == '1';
+      sdMounted = sdStatusMatch.group(2) == '1';
+      sdBusy = sdStatusMatch.group(3) == '1' || _sdTransferCompleter != null;
+      sdTotal = int.tryParse(sdStatusMatch.group(5)!) ?? 0;
+      sdUsed = int.tryParse(sdStatusMatch.group(6)!) ?? 0;
+      sdFree = int.tryParse(sdStatusMatch.group(7)!) ?? 0;
+      return;
+    }
+    final sdLsMatch = _reSdLs.firstMatch(line);
+    if (sdLsMatch != null) {
+      sdTotal = int.tryParse(sdLsMatch.group(1)!) ?? sdTotal;
+      sdUsed = int.tryParse(sdLsMatch.group(2)!) ?? sdUsed;
+      sdFree = int.tryParse(sdLsMatch.group(3)!) ?? sdFree;
+      _sdTmp.clear();
+      sdListing = true;
+      return;
+    }
+    final sdEntMatch = _reSdEnt.firstMatch(line);
+    if (sdEntMatch != null) {
+      _sdTmp.add(
+        SdFile(
+          path: sdEntMatch.group(1)!,
+          size: int.tryParse(sdEntMatch.group(2)!) ?? 0,
+        ),
+      );
+      return;
+    }
+    if (line == 'sd: LS end') {
+      final files = _sdTmp.toList()..sort((a, b) => a.path.compareTo(b.path));
+      sdFiles = List.unmodifiable(files);
+      _sdTmp.clear();
+      sdListing = false;
+      final listing = _espFlashStorageListing;
+      if (listing != null && !listing.isCompleted) listing.complete();
+      return;
+    }
+    final sdBegin = _reSdGetBegin.firstMatch(line);
+    if (sdBegin != null) {
+      _sdTransferId = int.tryParse(sdBegin.group(1)!) ?? 0;
+      _sdTotalBytes = int.tryParse(sdBegin.group(2)!) ?? 0;
+      _sdSentBytes = 0;
+      sdBusy = true;
+      return;
+    }
+    final sdData = _reSdData.firstMatch(line);
+    if (sdData != null) {
+      _queueSdData(sdData);
+      return;
+    }
+    final sdEnd = _reSdGetEnd.firstMatch(line);
+    if (sdEnd != null) {
+      unawaited(_completeSdTransfer(sdEnd));
+      return;
+    }
+    final sdError = _reSdGetError.firstMatch(line);
+    if (sdError != null) {
+      _failSdTransfer(StateError('SD transfer failed: ${sdError.group(2)}'));
+      return;
+    }
+    if (line.startsWith('sd: ') && line.contains(' failed err=')) {
+      connectionIssue = line;
+      sdBusy = false;
+      if (line.startsWith('sd: ls failed')) {
+        _espFlashStorageListingError = line;
+        final listing = _espFlashStorageListing;
+        if (listing != null && !listing.isCompleted) listing.complete();
+      }
+      if (_sdTransferCompleter != null) {
+        _failSdTransfer(StateError(line));
+      }
+      return;
+    }
+    if (line == 'sd: mount ok' ||
+        line == 'sd: unmount ok' ||
+        line == 'sd: format ok' ||
+        line == 'sd: cp-to-lfs ok' ||
+        line == 'sd: cp-from-lfs ok') {
+      sdBusy = false;
+      return;
+    }
     final fsLs = _reFsLs.firstMatch(line);
     if (fsLs != null) {
       fsTotal = int.tryParse(fsLs.group(1)!) ?? fsTotal;
       fsUsed = int.tryParse(fsLs.group(2)!) ?? fsUsed;
       _fsTmp.clear();
+      _fsDirectoriesTmp.clear();
       fsListing = true;
       return;
     }
@@ -1133,11 +1467,22 @@ class DeviceController extends ChangeNotifier {
       );
       return;
     }
+    final fsDir = _reFsDir.firstMatch(line);
+    if (fsDir != null) {
+      _fsDirectoriesTmp.add(FsDirectory(path: fsDir.group(1)!));
+      return;
+    }
     if (line == 'fs: LS end') {
       final list = _fsTmp.toList()..sort((a, b) => a.path.compareTo(b.path));
+      final directories = _fsDirectoriesTmp.toList()
+        ..sort((a, b) => a.path.compareTo(b.path));
       fsFiles = List.unmodifiable(list);
+      fsDirectories = List.unmodifiable(directories);
       _fsTmp.clear();
+      _fsDirectoriesTmp.clear();
       fsListing = false;
+      final listing = _espFlashStorageListing;
+      if (listing != null && !listing.isCompleted) listing.complete();
       return;
     }
     final fsInfo = _reFsInfo.firstMatch(line);
@@ -1157,6 +1502,9 @@ class DeviceController extends ChangeNotifier {
     }
     if (line == 'fs: not ready') {
       connectionIssue = 'LittleFS not ready on device';
+      _espFlashStorageListingError = connectionIssue;
+      final listing = _espFlashStorageListing;
+      if (listing != null && !listing.isCompleted) listing.complete();
       return;
     }
     if (line == 'cli: command queue full; input dropped' ||
@@ -2764,6 +3112,104 @@ class DeviceController extends ChangeNotifier {
     }
   }
 
+  void _queueSdData(RegExpMatch match) {
+    final id = int.tryParse(match.group(1)!) ?? -1;
+    final offset = int.tryParse(match.group(2)!) ?? -1;
+    final length = int.tryParse(match.group(3)!) ?? -1;
+    final expectedCrc = int.tryParse(match.group(4)!, radix: 16);
+    final hex = match.group(5)!;
+    final writer = _sdChunkWriter;
+    final completer = _sdTransferCompleter;
+    if (writer == null || completer == null || id != _sdTransferId) {
+      _failSdTransfer(StateError('Unexpected SD data frame.'));
+      return;
+    }
+    if (offset != _sdExpectedOffset ||
+        length < 0 ||
+        expectedCrc == null ||
+        hex.length != length * 2) {
+      _failSdTransfer(StateError('Invalid SD data frame sequence.'));
+      unawaited(_sendCommand('sd cancel $id').catchError((Object _) {}));
+      return;
+    }
+
+    final bytes = Uint8List(length);
+    for (var i = 0; i < length; i++) {
+      bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    if (_sdCrc32(bytes) != expectedCrc) {
+      _failSdTransfer(StateError('SD transfer chunk checksum mismatch.'));
+      unawaited(_sendCommand('sd cancel $id').catchError((Object _) {}));
+      return;
+    }
+    final nextOffset = offset + length;
+    _sdExpectedOffset = nextOffset;
+    _sdWriteQueue = _sdWriteQueue
+        .then((_) async {
+          if (completer.isCompleted) return;
+          await writer(bytes);
+          await _sendCommand('sd ack $id $nextOffset');
+          _sdSentBytes = nextOffset;
+          _notifyListeners();
+        })
+        .catchError((Object error, StackTrace stackTrace) {
+          _failSdTransfer(error);
+          unawaited(_sendCommand('sd cancel $id').catchError((Object _) {}));
+        });
+  }
+
+  int _sdCrc32(Uint8List bytes) {
+    var crc = 0xffffffff;
+    for (final byte in bytes) {
+      crc ^= byte;
+      for (var bit = 0; bit < 8; bit++) {
+        crc = (crc >> 1) ^ ((crc & 1) == 1 ? 0xedb88320 : 0);
+      }
+    }
+    return (crc ^ 0xffffffff) & 0xffffffff;
+  }
+
+  Future<void> _completeSdTransfer(RegExpMatch match) async {
+    final id = int.tryParse(match.group(1)!) ?? -1;
+    final total = int.tryParse(match.group(2)!) ?? -1;
+    final sent = int.tryParse(match.group(3)!) ?? -1;
+    final truncated = match.group(4) == '1';
+    final completer = _sdTransferCompleter;
+    if (completer == null || id != _sdTransferId) {
+      _failSdTransfer(StateError('Unexpected SD transfer completion.'));
+      return;
+    }
+    try {
+      await _sdWriteQueue;
+      if (sent != _sdExpectedOffset || total < sent) {
+        throw StateError('SD transfer ended with inconsistent byte counts.');
+      }
+      if (!completer.isCompleted) {
+        completer.complete(
+          SdTransferResult(
+            totalBytes: total,
+            transferredBytes: sent,
+            truncated: truncated,
+          ),
+        );
+      }
+    } catch (error) {
+      _failSdTransfer(error);
+    } finally {
+      sdBusy = false;
+      _notifyListeners();
+    }
+  }
+
+  void _failSdTransfer(Object error) {
+    final completer = _sdTransferCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(error);
+    }
+    sdBusy = false;
+    _notifyListeners();
+  }
+
   // ── Public API ──────────────────────────────────────────────
 
   Future<void> scanWifi() async {
@@ -3741,13 +4187,822 @@ class DeviceController extends ChangeNotifier {
   // ── LittleFS file browser ───────────────────────────────────
   Future<void> fsRefresh() => _sendCommand('fs ls');
 
-  Future<void> fsDelete(String path) async {
-    // Optimistic removal so the list updates immediately; the trailing
-    // `fs ls` reconciles with the device's actual state.
-    fsFiles = fsFiles.where((f) => f.path != path).toList(growable: false);
+  bool _isValidFsPath(String path) {
+    if (path.isEmpty ||
+        path.length > 191 ||
+        path.startsWith('/') ||
+        path.endsWith('/') ||
+        path.contains('\\') ||
+        path.contains('"') ||
+        path.contains(':') ||
+        path.codeUnits.any((unit) => unit < 0x20 || unit == 0x7f)) {
+      return false;
+    }
+    return path
+        .split('/')
+        .every((part) => part.isNotEmpty && part != '.' && part != '..');
+  }
+
+  String _quoteCliPath(String path) => path.contains(' ') ? '"$path"' : path;
+
+  int _crc32Update(int crc, List<int> bytes) {
+    for (final byte in bytes) {
+      crc = (crc >>> 8) ^ _crc32Table[(crc ^ byte) & 0xff];
+    }
+    return crc & 0xffffffff;
+  }
+
+  Future<String> _sendFsOperation(String command, String responsePrefix) async {
+    if (_fsOperationReply != null) {
+      throw StateError('Another filesystem operation is awaiting a reply.');
+    }
+    final completer = Completer<String>();
+    _fsOperationReply = completer;
+    _fsOperationReplyPrefix = responsePrefix;
+    try {
+      await _sendCommand(command);
+      final response = await completer.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () =>
+            throw TimeoutException('No device response for `$command`.'),
+      );
+      if (!response.endsWith(' ok')) throw StateError(response);
+      return response;
+    } finally {
+      if (identical(_fsOperationReply, completer)) {
+        _fsOperationReply = null;
+        _fsOperationReplyPrefix = null;
+      }
+    }
+  }
+
+  Future<void> fsCreateDirectory(String path) async {
+    if (!_isValidFsPath(path)) {
+      throw ArgumentError('Invalid LittleFS directory path.');
+    }
+    await _sendFsOperation('fs mkdir ${_quoteCliPath(path)}', 'fs: MKDIR ');
+    await fsRefresh();
+  }
+
+  Future<void> fsRename(String oldPath, String newPath) async {
+    if (!_isValidFsPath(oldPath) || !_isValidFsPath(newPath)) {
+      throw ArgumentError('Invalid LittleFS source or destination path.');
+    }
+    await _sendFsOperation(
+      'fs mv ${_quoteCliPath(oldPath)} ${_quoteCliPath(newPath)}',
+      'fs: MV ',
+    );
+    await fsRefresh();
+  }
+
+  String _encodeUploadChunk(List<int> bytes) {
+    const hexDigits = '0123456789abcdef';
+    final hex = StringBuffer();
+    for (final byte in bytes) {
+      hex
+        ..writeCharCode(hexDigits.codeUnitAt(byte >> 4))
+        ..writeCharCode(hexDigits.codeUnitAt(byte & 0x0f));
+    }
+    return hex.toString();
+  }
+
+  Future<String> _sendEspFlashCommand(
+    String command,
+    String responsePrefix, {
+    bool preferWithoutResponse = false,
+  }) async {
+    if (_espFlashReply != null) {
+      throw StateError('Another ESP flasher command is awaiting a reply.');
+    }
+    final completer = Completer<String>();
+    _espFlashReply = completer;
+    _espFlashReplyPrefix = responsePrefix;
+    try {
+      await _sendCommand(command, preferWithoutResponse: preferWithoutResponse);
+      final response = await completer.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () =>
+            throw TimeoutException('No device response for `$command`.'),
+      );
+      if (response.startsWith('espflash: ERROR') ||
+          response.startsWith('scan: running;')) {
+        throw StateError(response);
+      }
+      return response;
+    } finally {
+      if (identical(_espFlashReply, completer)) {
+        _espFlashReply = null;
+        _espFlashReplyPrefix = null;
+      }
+    }
+  }
+
+  Future<void> espFlashStartManual({
+    required String storage,
+    required String path,
+    required int offset,
+    required String chip,
+  }) => espFlashStartBatch(
+    storage: storage,
+    images: [EspFlashBatchImage(path: path, offset: offset)],
+    chip: chip,
+  );
+
+  Future<void> espFlashStartBatch({
+    required String storage,
+    required List<EspFlashBatchImage> images,
+    required String chip,
+  }) async {
+    if (!const {'lfs', 'sd'}.contains(storage) ||
+        images.isEmpty ||
+        images.length > 3 ||
+        images.any(
+          (image) =>
+              !_isValidUploadPath(image.path) ||
+              image.offset < 0 ||
+              image.offset > 0xffffffff ||
+              (image.offset & 3) != 0,
+        )) {
+      throw ArgumentError('Invalid ESP flash source, image list, or offset.');
+    }
+    final batchBegin = 'espflash batch begin $storage ${images.length} $chip';
+    final imageCommands = [
+      for (var index = 0; index < images.length; index++)
+        'espflash batch image $index '
+            '${_quoteCliPath(images[index].path)} '
+            '0x${images[index].offset.toRadixString(16)}',
+    ];
+    if (<String>[
+      batchBegin,
+      ...imageCommands,
+      'espflash batch start',
+    ].any((command) => utf8.encode('$command\n').length > 255)) {
+      throw ArgumentError(
+        'A selected BIN path is too long for the device CLI.',
+      );
+    }
+    espFlashState = 'starting';
+    espFlashProgrammedBytes = 0;
+    espFlashImageBytes = 0;
+    espFlashMessage = 'Preparing ${images.length}-image flash batch';
     _notifyListeners();
-    await _sendCommand('fs rm $path');
+    var batchStaged = false;
+    var startSubmitted = false;
+    try {
+      await _sendEspFlashCommand(
+        batchBegin,
+        'espflash: BATCH_READY count=${images.length}',
+      );
+      batchStaged = true;
+      for (var index = 0; index < imageCommands.length; index++) {
+        await _sendEspFlashCommand(
+          imageCommands[index],
+          'espflash: BATCH_IMAGE_READY index=$index',
+        );
+      }
+      startSubmitted = true;
+      batchStaged = false;
+      await _sendEspFlashCommand('espflash batch start', 'espflash: ACCEPTED');
+    } catch (error) {
+      espFlashState = startSubmitted ? 'unknown' : 'failed';
+      espFlashMessage = startSubmitted
+          ? 'Could not confirm whether the batch started. Check device status before retrying: $error'
+          : 'Flash batch setup failed: $error';
+      _notifyListeners();
+      Object? abortFailure;
+      if (batchStaged) {
+        try {
+          await _sendEspFlashCommand(
+            'espflash batch abort',
+            'espflash: BATCH_ABORTED',
+          );
+        } catch (abortError) {
+          abortFailure = abortError;
+        }
+      }
+      if (abortFailure != null) {
+        throw StateError(
+          'Batch setup failed: $error. Staged batch cleanup also failed: $abortFailure',
+        );
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> espFlashAssertBoot() async {
+    await _sendEspFlashCommand('espflash boot', 'espflash: boot ok');
+    espFlashBootAsserted = true;
+    _notifyListeners();
+  }
+
+  Future<void> espFlashReleaseBoot() async {
+    await _sendEspFlashCommand('espflash release', 'espflash: release ok');
+    espFlashBootAsserted = false;
+    _notifyListeners();
+  }
+
+  Future<void> espFlashResetTarget() async {
+    await _sendEspFlashCommand('espflash reset', 'espflash: reset ok');
+  }
+
+  Future<void> espFlashStatus() async {
+    await _sendEspFlashCommand('espflash status', 'espflash: STATUS');
+  }
+
+  Future<String> _queryEspFlashStatus() =>
+      _sendEspFlashCommand('espflash status', 'espflash: STATUS');
+
+  Future<int> _sendEspFlashUploadWindow({
+    required int transferId,
+    required int startOffset,
+    required List<List<int>> chunks,
+  }) async {
+    const maxAttempts = 3;
+    var confirmedOffset = startOffset;
+    final windowEnd =
+        startOffset +
+        chunks.fold<int>(0, (total, chunk) => total + chunk.length);
+
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      final failure = Completer<String>();
+      _espFlashChunkFailure = failure;
+      final acknowledgements = <Future<void>>[];
+      var chunkOffset = startOffset;
+      try {
+        for (final bytes in chunks) {
+          final nextOffset = chunkOffset + bytes.length;
+          if (chunkOffset >= confirmedOffset) {
+            if (_espFlashUploadCancelRequested) {
+              throw StateError('ESP file upload cancelled.');
+            }
+            final acknowledgement = Completer<void>();
+            _espFlashChunkReplies[nextOffset] = acknowledgement;
+            final command =
+                'espflash data $transferId $chunkOffset '
+                '${_encodeUploadChunk(bytes)}';
+            try {
+              await _sendCommand(command, preferWithoutResponse: true);
+            } catch (_) {
+              _espFlashChunkReplies.remove(nextOffset);
+              rethrow;
+            }
+            acknowledgements.add(acknowledgement.future);
+          }
+          chunkOffset = nextOffset;
+        }
+
+        final ackWait = Future.wait<void>(acknowledgements).then<void>((_) {});
+        final failureWait = failure.future.then<void>((body) {
+          throw StateError('Device rejected upload data: $body');
+        });
+        await Future.any<void>([ackWait, failureWait]).timeout(
+          const Duration(seconds: 20),
+          onTimeout: () => throw TimeoutException(
+            'Timed out waiting for upload window acknowledgement.',
+          ),
+        );
+        return windowEnd;
+      } on TimeoutException {
+        if (attempt + 1 >= maxAttempts) rethrow;
+        final status = await _queryEspFlashStatus();
+        final match = RegExp(
+          r'^espflash: STATUS busy=\d+ cancel=\d+ boot=\d+ '
+          r'upload=(\d+) id=(\d+) offset=(\d+) size=\d+ '
+          r'flash=(?:none|running|ok|failed|cancelled) '
+          r'progress=\d+ total=\d+$',
+        ).firstMatch(status);
+        if (match == null ||
+            match.group(1) != '1' ||
+            int.tryParse(match.group(2)!) != transferId) {
+          throw StateError(
+            'Device lost the active upload while recovering its ACK.',
+          );
+        }
+        final reportedOffset = int.tryParse(match.group(3)!);
+        final validOffsets = <int>{startOffset, windowEnd};
+        var boundary = startOffset;
+        for (final bytes in chunks) {
+          boundary += bytes.length;
+          validOffsets.add(boundary);
+        }
+        if (reportedOffset == null ||
+            reportedOffset < confirmedOffset ||
+            reportedOffset > windowEnd ||
+            !validOffsets.contains(reportedOffset)) {
+          throw StateError(
+            'Device reported an unexpected upload offset '
+            '(${match.group(3)}; expected a window boundary).',
+          );
+        }
+        if (reportedOffset == windowEnd) return windowEnd;
+        confirmedOffset = reportedOffset;
+      } finally {
+        var offset = startOffset;
+        for (final bytes in chunks) {
+          offset += bytes.length;
+          _espFlashChunkReplies.remove(offset);
+        }
+        if (identical(_espFlashChunkFailure, failure)) {
+          _espFlashChunkFailure = null;
+        }
+      }
+    }
+    throw StateError('Upload window retries were exhausted.');
+  }
+
+  void espFlashClearSessionState() {
+    if (espFlashUploading ||
+        espFlashRemoteUploadId != null ||
+        const {
+          'starting',
+          'detecting',
+          'waiting',
+          'flashing',
+          'cancelling',
+        }.contains(espFlashState)) {
+      return;
+    }
+    espFlashState = 'idle';
+    espFlashMessage = '';
+    espFlashProgrammedBytes = 0;
+    espFlashImageBytes = 0;
+    espFlashCancelRequested = false;
+    _notifyListeners();
+  }
+
+  Future<List<EspFlashDeviceImage>> espFlashListDeviceImages(
+    String storage,
+  ) async {
+    if (!const {'lfs', 'sd'}.contains(storage)) {
+      throw ArgumentError('Invalid ESP flash storage.');
+    }
+    if (_espFlashStorageListing != null) {
+      throw StateError('An ESP flash storage listing is already running.');
+    }
+
+    final listing = Completer<void>();
+    _espFlashStorageListing = listing;
+    _espFlashStorageListingError = null;
+    try {
+      if (storage == 'lfs') {
+        await _sendCommand('fs ls');
+      } else {
+        await _sendCommand('sd ls');
+      }
+      await listing.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw TimeoutException(
+          'Timed out while listing ${storage == 'lfs' ? 'LittleFS' : 'SD'} files.',
+        ),
+      );
+      final error = _espFlashStorageListingError;
+      if (error != null) throw StateError(error);
+
+      final files = storage == 'lfs'
+          ? fsFiles.map(
+              (file) => EspFlashDeviceImage(path: file.path, size: file.size),
+            )
+          : sdFiles.map(
+              (file) => EspFlashDeviceImage(path: file.path, size: file.size),
+            );
+      return files
+          .where((file) => file.path.toLowerCase().endsWith('.bin'))
+          .toList(growable: false);
+    } finally {
+      if (identical(_espFlashStorageListing, listing)) {
+        _espFlashStorageListing = null;
+        _espFlashStorageListingError = null;
+      }
+    }
+  }
+
+  Future<void> espFlashCancelFlash() async {
+    await _sendEspFlashCommand(
+      'espflash cancel-flash',
+      'espflash: CANCEL_REQUESTED',
+    );
+    espFlashCancelRequested = true;
+    espFlashState = 'cancelling';
+    _notifyListeners();
+  }
+
+  Future<void> espFlashCancelRemoteUpload() async {
+    await _sendEspFlashCommand(
+      'espflash cancel-active',
+      'espflash: UPLOAD_CANCELLED id=',
+    );
+    espFlashRemoteUploadId = null;
+    espFlashRemoteUploadOffset = 0;
+    espFlashRemoteUploadSize = 0;
+    _notifyListeners();
+  }
+
+  void espFlashCancelUpload() {
+    _espFlashUploadCancelRequested = true;
+  }
+
+  bool _isValidUploadPath(String path) {
+    if (path.isEmpty ||
+        utf8.encode(path).length >= 192 ||
+        path.startsWith('/') ||
+        path.endsWith('/') ||
+        path.contains('\\') ||
+        path.contains('"') ||
+        path.contains(':') ||
+        path.codeUnits.any((unit) => unit < 0x20 || unit == 0x7f)) {
+      return false;
+    }
+    return path
+        .split('/')
+        .every((part) => part.isNotEmpty && part != '.' && part != '..');
+  }
+
+  Future<void> espFlashCreateDirectory({
+    required String storage,
+    required String path,
+  }) async {
+    if (!const {'lfs', 'sd'}.contains(storage) || !_isValidUploadPath(path)) {
+      throw ArgumentError('Invalid upload destination folder.');
+    }
+    final response = await _sendEspFlashCommand(
+      'espflash mkdir $storage ${_quoteCliPath(path)}',
+      'espflash: DIRECTORY_CREATED',
+    );
+    if (response.startsWith('espflash: ERROR')) {
+      throw StateError(response);
+    }
+  }
+
+  Future<void> espFlashUploadBatch({
+    required String storage,
+    required List<EspFlashUploadSource> files,
+    List<String> directories = const [],
+  }) async {
+    if (espFlashUploading) {
+      throw StateError('An ESP BIN upload is already running.');
+    }
+    espFlashUploadBytes = 0;
+    espFlashUploadTotalBytes = 0;
+    espFlashUploadFileIndex = 0;
+    espFlashUploadFileCount = files.length;
+    espFlashUploadCompletedFiles = 0;
+    espFlashUploadPath = '';
+    if (!const {'lfs', 'sd'}.contains(storage) ||
+        (files.isEmpty && directories.isEmpty) ||
+        files.length > 512 ||
+        directories.length > 2048) {
+      throw ArgumentError('Invalid upload destination or selection.');
+    }
+
+    final paths = <String>{};
+    final directoryPaths = directories.toSet();
+    var totalLength = 0;
+    for (final file in files) {
+      if (!_isValidUploadPath(file.path) ||
+          file.length < 0 ||
+          file.length > 0x7fffffff ||
+          !paths.add(file.path) ||
+          directoryPaths.contains(file.path)) {
+        throw ArgumentError(
+          'Invalid, duplicate, or larger-than-2-GiB upload file.',
+        );
+      }
+      totalLength += file.length;
+    }
+    for (final directory in directories) {
+      if (!_isValidUploadPath(directory)) {
+        throw ArgumentError('Invalid upload directory path.');
+      }
+    }
+
+    espFlashUploading = true;
+    _espFlashUploadCancelRequested = false;
+    espFlashUploadBytes = 0;
+    espFlashUploadTotalBytes = totalLength;
+    _notifyListeners();
+
+    var completedBytes = 0;
+    var activeTransferId = 0;
+    try {
+      final filePaths = files.map((file) => file.path).toList(growable: false);
+      final orderedDirectories =
+          directoryPaths
+              .where(
+                (directory) =>
+                    !filePaths.any((path) => path.startsWith('$directory/')) &&
+                    !directoryPaths.any(
+                      (child) =>
+                          child != directory && child.startsWith('$directory/'),
+                    ),
+              )
+              .toList()
+            ..sort((a, b) {
+              final depth = a.split('/').length.compareTo(b.split('/').length);
+              return depth != 0 ? depth : a.compareTo(b);
+            });
+      for (final directory in orderedDirectories) {
+        if (_espFlashUploadCancelRequested) {
+          throw StateError('ESP file upload cancelled.');
+        }
+        await espFlashCreateDirectory(storage: storage, path: directory);
+      }
+
+      for (var index = 0; index < files.length; index++) {
+        final file = files[index];
+        if (_espFlashUploadCancelRequested) {
+          throw StateError('ESP file upload cancelled.');
+        }
+        espFlashUploadFileIndex = index + 1;
+        espFlashUploadPath = file.path;
+        _notifyListeners();
+
+        var expectedCrc = 0xffffffff;
+        var measuredLength = 0;
+        await for (final part in file.openRead()) {
+          if (_espFlashUploadCancelRequested) {
+            throw StateError('ESP file upload cancelled.');
+          }
+          expectedCrc = _crc32Update(expectedCrc, part);
+          measuredLength += part.length;
+        }
+        expectedCrc = (~expectedCrc) & 0xffffffff;
+        if (measuredLength != file.length) {
+          throw StateError(
+            'Source file size changed while reading ${file.path}.',
+          );
+        }
+
+        final begin = await _sendEspFlashCommand(
+          'espflash upload $storage ${_quoteCliPath(file.path)} '
+              '${file.length} ${expectedCrc.toRadixString(16).padLeft(8, '0')}',
+          'espflash: UPLOAD id=',
+        );
+        final match = RegExp(
+          r'^espflash: UPLOAD id=(\d+) chunk=(\d+)$',
+        ).firstMatch(begin);
+        if (match == null) throw StateError('Invalid upload handshake: $begin');
+        activeTransferId = int.parse(match.group(1)!);
+        _espFlashPendingTransferId = activeTransferId;
+        final maxChunk = int.parse(match.group(2)!);
+        if (maxChunk < 1 || maxChunk > 108) {
+          throw StateError('Device reported an unsupported upload chunk size.');
+        }
+
+        var offset = 0;
+        var transferCrc = 0xffffffff;
+        var transferLength = 0;
+        final transferStopwatch = Stopwatch()..start();
+        var lastProgressBytes = completedBytes;
+        var lastProgressUpdate = Duration.zero;
+        final chunkBuffer = <int>[];
+        final window = <List<int>>[];
+        Future<void> sendWindow() async {
+          if (window.isEmpty) return;
+          if (_espFlashUploadCancelRequested) {
+            throw StateError('ESP file upload cancelled.');
+          }
+          final startOffset = offset;
+          offset = await _sendEspFlashUploadWindow(
+            transferId: activeTransferId,
+            startOffset: startOffset,
+            chunks: List<List<int>>.of(window),
+          );
+          final acceptedBytes = offset - startOffset;
+          completedBytes += acceptedBytes;
+          espFlashUploadBytes = completedBytes;
+          final elapsed = transferStopwatch.elapsed;
+          if (completedBytes - lastProgressBytes >= 16 * 1024 ||
+              elapsed - lastProgressUpdate >=
+                  const Duration(milliseconds: 200)) {
+            lastProgressBytes = completedBytes;
+            lastProgressUpdate = elapsed;
+            _notifyListeners();
+          }
+          window.clear();
+        }
+
+        await for (final part in file.openRead()) {
+          transferCrc = _crc32Update(transferCrc, part);
+          transferLength += part.length;
+          for (final byte in part) {
+            chunkBuffer.add(byte);
+            if (chunkBuffer.length == maxChunk) {
+              window.add(List<int>.of(chunkBuffer));
+              chunkBuffer.clear();
+              if (window.length == 4) await sendWindow();
+            }
+          }
+        }
+        if (chunkBuffer.isNotEmpty) {
+          window.add(List<int>.of(chunkBuffer));
+          chunkBuffer.clear();
+        }
+        await sendWindow();
+        if (transferLength != file.length ||
+            ((~transferCrc) & 0xffffffff) != expectedCrc) {
+          throw StateError('Source file changed while uploading ${file.path}.');
+        }
+        if (_espFlashUploadCancelRequested) {
+          throw StateError('ESP file upload cancelled.');
+        }
+        await _sendEspFlashCommand(
+          'espflash finish $activeTransferId',
+          'espflash: UPLOAD_DONE id=$activeTransferId ok',
+        );
+        activeTransferId = 0;
+        _espFlashPendingTransferId = null;
+        espFlashUploadBytes = completedBytes;
+        espFlashUploadCompletedFiles = index + 1;
+        _notifyListeners();
+      }
+
+      try {
+        if (storage == 'lfs') {
+          await fsRefresh();
+        } else {
+          await sdRefresh();
+        }
+      } catch (error) {
+        connectionIssue =
+            'BIN upload verified, but storage listing refresh failed: $error';
+        _notifyListeners();
+      }
+    } catch (error) {
+      var failureMessage = 'ESP file upload failed: $error';
+      if (activeTransferId != 0) {
+        try {
+          await _sendEspFlashCommand(
+            'espflash cancel $activeTransferId',
+            'espflash: UPLOAD_CANCELLED id=$activeTransferId ok',
+          );
+        } catch (cleanupError) {
+          failureMessage += '; transfer cleanup failed: $cleanupError';
+        }
+      }
+      try {
+        if (storage == 'lfs') {
+          await fsRefresh();
+        } else {
+          await sdRefresh();
+        }
+      } catch (refreshError) {
+        failureMessage += '; storage refresh failed: $refreshError';
+      }
+      connectionIssue = failureMessage;
+      _notifyListeners();
+      rethrow;
+    } finally {
+      _espFlashPendingTransferId = null;
+      _espFlashChunkReplies.clear();
+      _espFlashChunkFailure = null;
+      espFlashUploading = false;
+      _espFlashUploadCancelRequested = false;
+      espFlashUploadPath = '';
+      _notifyListeners();
+    }
+  }
+
+  Future<void> fsDelete(String path) async {
+    if (!_isValidFsPath(path)) {
+      throw ArgumentError('Invalid LittleFS path.');
+    }
+    await _sendFsOperation('fs rm ${_quoteCliPath(path)}', 'fs: RM ');
     await _sendCommand('fs ls');
+  }
+
+  // ── SD card file manager and streaming transfer ─────────────
+  Future<void> sdRefresh() async {
+    await _sendCommand('sd status');
+    await _sendCommand('sd ls');
+  }
+
+  Future<void> sdMount() async {
+    sdBusy = true;
+    _notifyListeners();
+    try {
+      await _sendCommand('sd mount');
+      await sdRefresh();
+    } finally {
+      sdBusy = false;
+      _notifyListeners();
+    }
+  }
+
+  Future<void> sdUnmount() async {
+    sdBusy = true;
+    _notifyListeners();
+    try {
+      await _sendCommand('sd unmount');
+      await sdRefresh();
+    } finally {
+      sdBusy = false;
+      _notifyListeners();
+    }
+  }
+
+  Future<void> sdFormat() async {
+    sdBusy = true;
+    _notifyListeners();
+    try {
+      await _sendCommand('sd format');
+      await sdRefresh();
+    } finally {
+      sdBusy = false;
+      _notifyListeners();
+    }
+  }
+
+  Future<void> sdCopyToLittleFs(String path) async {
+    sdBusy = true;
+    _notifyListeners();
+    try {
+      await _sendCommand('sd cp-to-lfs ${_quoteSdPath(path)}');
+      await sdRefresh();
+      await fsRefresh();
+    } finally {
+      sdBusy = false;
+      _notifyListeners();
+    }
+  }
+
+  Future<void> fsCopyToSd(String path) async {
+    sdBusy = true;
+    _notifyListeners();
+    try {
+      await _sendCommand('sd cp-from-lfs ${_quoteSdPath(path)}');
+      await sdRefresh();
+    } finally {
+      sdBusy = false;
+      _notifyListeners();
+    }
+  }
+
+  Future<Uint8List> sdPreview(String path) async {
+    final builder = BytesBuilder(copy: false);
+    final result = await _runSdTransfer(
+      'preview',
+      path,
+      (bytes) async => builder.add(bytes),
+    );
+    sdPreviewTotalBytes = result.totalBytes;
+    sdPreviewTruncated = result.truncated;
+    return builder.takeBytes();
+  }
+
+  Future<SdTransferResult> sdDownload(
+    String path,
+    Future<void> Function(Uint8List bytes) onChunk,
+  ) => _runSdTransfer('get', path, onChunk);
+
+  int sdPreviewTotalBytes = 0;
+  bool sdPreviewTruncated = false;
+
+  Future<SdTransferResult> _runSdTransfer(
+    String operation,
+    String path,
+    Future<void> Function(Uint8List bytes) onChunk,
+  ) async {
+    if (_sdTransferCompleter != null) {
+      throw StateError('Another SD transfer is already running.');
+    }
+    final completer = Completer<SdTransferResult>();
+    _sdTransferCompleter = completer;
+    _sdChunkWriter = onChunk;
+    _sdWriteQueue = Future<void>.value();
+    _sdTransferId = 0;
+    _sdExpectedOffset = 0;
+    _sdTotalBytes = 0;
+    _sdSentBytes = 0;
+    sdBusy = true;
+    _notifyListeners();
+
+    try {
+      await _sendCommand('sd $operation ${_quoteSdPath(path)}');
+      return await completer.future.timeout(const Duration(hours: 2));
+    } catch (error) {
+      _failSdTransfer(error);
+      if (_sdTransferId != 0) {
+        unawaited(
+          _sendCommand('sd cancel $_sdTransferId').catchError((Object _) {}),
+        );
+      }
+      rethrow;
+    } finally {
+      _sdTransferCompleter = null;
+      _sdChunkWriter = null;
+      sdBusy = false;
+      _notifyListeners();
+    }
+  }
+
+  String _quoteSdPath(String path) {
+    if (path.isEmpty ||
+        path.contains('"') ||
+        path.contains('\r') ||
+        path.contains('\n')) {
+      throw ArgumentError.value(path, 'path', 'Invalid SD file path.');
+    }
+    return '"$path"';
   }
 
   Future<void> irEmulateStart(String name, {int count = 0}) async {

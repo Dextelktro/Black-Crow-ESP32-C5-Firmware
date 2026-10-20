@@ -5,6 +5,10 @@ idf_component_register(
         "cli.c"
         "transport_serial.c"
         "transport_ble.c"
+        "esp_flasher.c"
+        "esp_upload.c"
+        "spi_shared_bus.c"
+        "sd_storage.c"
         "frames.c"
         "wifi_ctrl.c"
         "targets.c"
@@ -44,9 +48,13 @@ idf_component_register(
         esp_timer
         driver
         vfs
+        fatfs
+        sdmmc
         hal
         bt
         esp_psram
+        esp_partition
+        esp-serial-flasher
         led_strip
         littlefs
         esp_http_server

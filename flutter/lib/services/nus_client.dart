@@ -21,8 +21,8 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class NusUuids {
   static final Guid service = Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
-  static final Guid rx      = Guid('6e400002-b5a3-f393-e0a9-e50e24dcca9e');
-  static final Guid tx      = Guid('6e400003-b5a3-f393-e0a9-e50e24dcca9e');
+  static final Guid rx = Guid('6e400002-b5a3-f393-e0a9-e50e24dcca9e');
+  static final Guid tx = Guid('6e400003-b5a3-f393-e0a9-e50e24dcca9e');
 }
 
 class NusConnection {
@@ -32,8 +32,8 @@ class NusConnection {
     required this.incoming,
     required this.disconnected,
     required Future<void> Function() doDisconnect,
-  })  : _rx = rx,
-        _doDisconnect = doDisconnect;
+  }) : _rx = rx,
+       _doDisconnect = doDisconnect;
 
   final BluetoothDevice device;
   final BluetoothCharacteristic _rx;
@@ -54,7 +54,7 @@ class NusConnection {
 
   /// Sends a line to the device. Writes are serialized so commands issued
   /// during setup cannot collide in the platform GATT queue.
-  Future<void> send(String text) {
+  Future<void> send(String text, {bool preferWithoutResponse = false}) {
     if (_disconnectCalled) {
       return Future<void>.error(StateError('BLE connection is closing'));
     }
@@ -62,7 +62,8 @@ class NusConnection {
     final bytes = utf8.encode(text);
     if (bytes.length > 255) {
       return Future<void>.error(
-          ArgumentError('BLE CLI commands must not exceed 254 bytes'));
+        ArgumentError('BLE CLI commands must not exceed 254 bytes'),
+      );
     }
     final operation = _writeQueue.then((_) async {
       if (!device.isConnected) {
@@ -70,22 +71,28 @@ class NusConnection {
       }
       final mtu = device.mtuNow;
       final maxPayload = mtu > 3 ? mtu - 3 : 20;
-      const withoutResponse = false;
+      final withoutResponse =
+          preferWithoutResponse && _rx.properties.writeWithoutResponse;
       try {
         for (var offset = 0; offset < bytes.length; offset += maxPayload) {
           final remaining = bytes.length - offset;
-          final end = offset + (remaining < maxPayload ? remaining : maxPayload);
-          await _rx.write(
-            bytes.sublist(offset, end),
-            withoutResponse: withoutResponse,
-          ).timeout(const Duration(seconds: 8));
+          final end =
+              offset + (remaining < maxPayload ? remaining : maxPayload);
+          await _rx
+              .write(
+                bytes.sublist(offset, end),
+                withoutResponse: withoutResponse,
+              )
+              .timeout(const Duration(seconds: 8));
         }
       } catch (error, stackTrace) {
         if (device.isConnected) {
           try {
             await device.disconnect().timeout(const Duration(seconds: 4));
           } catch (cleanupError) {
-            debugPrint('BLE disconnect after failed write failed: $cleanupError');
+            debugPrint(
+              'BLE disconnect after failed write failed: $cleanupError',
+            );
           }
         }
         Error.throwWithStackTrace(error, stackTrace);
@@ -110,7 +117,9 @@ class NusClient {
   /// Streams scan results filtered to peripherals advertising the NUS service
   /// or named like our firmware. Caller is expected to call [stopScan] when
   /// done. Safe to call multiple times.
-  Stream<List<ScanResult>> scan({Duration timeout = const Duration(seconds: 8)}) {
+  Stream<List<ScanResult>> scan({
+    Duration timeout = const Duration(seconds: 8),
+  }) {
     final controller = StreamController<List<ScanResult>>();
     final generation = ++_scanGeneration;
     unawaited(_startScan(controller, generation, timeout));
@@ -169,7 +178,8 @@ class NusClient {
       }
 
       debugPrint(
-          'BLE service-filter scan failed; retrying without UUID filter: $error');
+        'BLE service-filter scan failed; retrying without UUID filter: $error',
+      );
       try {
         await FlutterBluePlus.startScan(timeout: timeout);
       } catch (fallbackError, fallbackStackTrace) {
@@ -202,9 +212,7 @@ class NusClient {
   Future<void> _stopActiveScan() async {
     try {
       if (FlutterBluePlus.isScanningNow) {
-        await FlutterBluePlus
-            .stopScan()
-            .timeout(const Duration(seconds: 5));
+        await FlutterBluePlus.stopScan().timeout(const Duration(seconds: 5));
       }
     } finally {
       await _scanSub?.cancel();
@@ -213,7 +221,9 @@ class NusClient {
   }
 
   bool _looksLikeDevice(ScanResult r) {
-    final uuids = r.advertisementData.serviceUuids.map((u) => u.str.toLowerCase()).toList();
+    final uuids = r.advertisementData.serviceUuids
+        .map((u) => u.str.toLowerCase())
+        .toList();
     if (uuids.contains(NusUuids.service.str.toLowerCase())) return true;
     final name = (r.advertisementData.advName.isNotEmpty
         ? r.advertisementData.advName
@@ -238,8 +248,11 @@ class NusClient {
     // from connect() with a stale handle and service discovery will fail.
     if (device.isConnected) {
       await device.disconnect().timeout(const Duration(seconds: 4));
-      await _waitForState(device, BluetoothConnectionState.disconnected,
-          const Duration(seconds: 3));
+      await _waitForState(
+        device,
+        BluetoothConnectionState.disconnected,
+        const Duration(seconds: 3),
+      );
     }
 
     // Android caches GATT services per-device. If the firmware was rebuilt
@@ -247,9 +260,7 @@ class NusClient {
     // garbage. Force-clear before connecting.
     if (Platform.isAndroid) {
       try {
-        await device
-            .clearGattCache()
-            .timeout(const Duration(seconds: 4));
+        await device.clearGattCache().timeout(const Duration(seconds: 4));
       } catch (error) {
         debugPrint('BLE GATT cache clear unavailable: $error');
       }
@@ -261,8 +272,8 @@ class NusClient {
       if (s == BluetoothConnectionState.connected) {
         hasConnected = true;
       } else if (hasConnected &&
-          s == BluetoothConnectionState.disconnected
-          && !disconnectedCompleter.isCompleted) {
+          s == BluetoothConnectionState.disconnected &&
+          !disconnectedCompleter.isCompleted) {
         disconnectedCompleter.complete();
       }
     });
@@ -270,22 +281,28 @@ class NusClient {
     BluetoothCharacteristic? tx;
     try {
       await device.connect(
-          timeout: const Duration(seconds: 12), autoConnect: false);
-      await _waitForState(device, BluetoothConnectionState.connected,
-          const Duration(seconds: 12));
+        timeout: const Duration(seconds: 12),
+        autoConnect: false,
+      );
+      await _waitForState(
+        device,
+        BluetoothConnectionState.connected,
+        const Duration(seconds: 12),
+      );
 
       if (Platform.isAndroid) {
         try {
           await device.requestMtu(247, timeout: 8);
         } catch (error) {
           debugPrint(
-              'BLE MTU negotiation unavailable; using MTU ${device.mtuNow}: $error');
+            'BLE MTU negotiation unavailable; using MTU ${device.mtuNow}: $error',
+          );
         }
       }
 
-      final services = await device
-          .discoverServices()
-          .timeout(const Duration(seconds: 15));
+      final services = await device.discoverServices().timeout(
+        const Duration(seconds: 15),
+      );
       final svc = services.firstWhere(
         (s) => s.uuid == NusUuids.service,
         orElse: () => throw StateError('NUS service not found on this device'),
@@ -299,18 +316,21 @@ class NusClient {
         orElse: () => throw StateError('NUS TX characteristic missing'),
       );
       if (!rx.properties.write) {
-        throw StateError('NUS RX characteristic does not support acknowledged writes');
+        throw StateError(
+          'NUS RX characteristic does not support acknowledged writes',
+        );
       }
       if (!tx.properties.notify) {
-        throw StateError('NUS TX characteristic does not support notifications');
+        throw StateError(
+          'NUS TX characteristic does not support notifications',
+        );
       }
 
-      await tx
-          .setNotifyValue(true)
-          .timeout(const Duration(seconds: 10));
+      await tx.setNotifyValue(true).timeout(const Duration(seconds: 10));
 
-      final incoming =
-          tx.onValueReceived.transform(const Utf8Decoder(allowMalformed: true));
+      final incoming = tx.onValueReceived.transform(
+        const Utf8Decoder(allowMalformed: true),
+      );
 
       Future<void> doDisconnect() async {
         await _disconnectDevice(device, tx!, stateSub);
@@ -328,10 +348,15 @@ class NusClient {
       if (device.isConnected) {
         try {
           await device.disconnect().timeout(const Duration(seconds: 4));
-          await _waitForState(device, BluetoothConnectionState.disconnected,
-              const Duration(seconds: 3));
+          await _waitForState(
+            device,
+            BluetoothConnectionState.disconnected,
+            const Duration(seconds: 3),
+          );
         } catch (cleanupError) {
-          debugPrint('BLE cleanup after connection setup failed: $cleanupError');
+          debugPrint(
+            'BLE cleanup after connection setup failed: $cleanupError',
+          );
         }
       }
       Error.throwWithStackTrace(error, stackTrace);
@@ -346,15 +371,18 @@ class NusClient {
     try {
       if (device.isConnected) {
         try {
-          await tx
-              .setNotifyValue(false)
-              .timeout(const Duration(seconds: 4));
+          await tx.setNotifyValue(false).timeout(const Duration(seconds: 4));
         } catch (error) {
-          debugPrint('Unable to disable BLE notifications during disconnect: $error');
+          debugPrint(
+            'Unable to disable BLE notifications during disconnect: $error',
+          );
         }
         await device.disconnect().timeout(const Duration(seconds: 4));
-        await _waitForState(device, BluetoothConnectionState.disconnected,
-            const Duration(seconds: 3));
+        await _waitForState(
+          device,
+          BluetoothConnectionState.disconnected,
+          const Duration(seconds: 3),
+        );
       }
     } finally {
       await stateSub.cancel();

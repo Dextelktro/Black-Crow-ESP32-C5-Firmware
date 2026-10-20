@@ -13,6 +13,8 @@
 #include "ble_spectrum.h"
 #include "ble_wardrive.h"
 #include "nrf24.h"
+#include "sd_storage.h"
+#include "spi_shared_bus.h"
 #include "monitor.h"
 #include "spectrum.h"
 #include "wifi_live_scan.h"
@@ -33,6 +35,30 @@ void app_main(void)
     }
 
     io_init();
+
+    esp_err_t spi_err = spi_shared_bus_init();
+    bool spi_radios_safe = false;
+    if (spi_err == ESP_OK) {
+        io_log("main: shared SPI bus ready\r\n");
+        esp_err_t sd_err = sd_storage_init();
+        bool sd_present = false;
+        bool sd_mounted = false;
+        bool sd_busy = false;
+        sd_storage_get_state(&sd_present, &sd_mounted, &sd_busy,
+                             &spi_radios_safe);
+        if (sd_err == ESP_OK) {
+            io_log("main: SD card mounted before radio SPI access\r\n");
+        } else if (!sd_present) {
+            io_log("main: no SD card detected; shared SPI radio access enabled\r\n");
+        } else {
+            io_log("main: SD initialization failed (%s); radio SPI access blocked\r\n",
+                   esp_err_to_name(sd_err));
+        }
+    } else {
+        io_log("main: shared SPI initialization failed (%s)\r\n",
+               esp_err_to_name(spi_err));
+    }
+
     targets_init();
     acl_init();
     attack_init();
@@ -66,7 +92,7 @@ void app_main(void)
     ble_wardrive_init();
     io_log("main: ble wardrive module ready\r\n");
 
-    if (nrf24_module_init() == ESP_OK) {
+    if (spi_radios_safe && nrf24_module_init() == ESP_OK) {
         io_log("main: nrf24 module ready\r\n");
     } else {
         io_log("main: nrf24 not available\r\n");

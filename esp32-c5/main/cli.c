@@ -1,6 +1,7 @@
 #include "cli.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -27,6 +28,7 @@
 #include "ble_spectrum.h"
 #include "ble_wardrive.h"
 #include "nrf24.h"
+#include "sd_storage.h"
 #include "monitor.h"
 #include "spectrum.h"
 #include "wifi_live_scan.h"
@@ -35,6 +37,8 @@
 #include "led.h"
 #include "ir.h"
 #include "storage_fs.h"
+#include "esp_flasher.h"
+#include "esp_upload.h"
 
 #define CLI_LINE_MAX 256
 
@@ -115,7 +119,20 @@ static const char *HELP =
     "  ir ls | info <name> | rm <name> saved signal library\r\n"
     "  ir emulate <name> [count] | ir emulate stop   replay a saved signal\r\n"
     "  ir status                       IR module status\r\n"
-    "  fs ls | info | rm <path>        browse/delete LittleFS files\r\n"
+    "  fs ls | info | rm <path>        browse/delete LittleFS files/folders\r\n"
+    "  fs mkdir <path> | mv <old> <new> create folder or rename entry\r\n"
+    "  sd status | ls | mount | unmount | format\r\n"
+    "  sd cp-to-lfs <path> | cp-from-lfs <path>\r\n"
+    "  sd get <path> | preview <path> | ack <id> <offset>\r\n"
+    "  espflash batch begin <lfs|sd> <count> <chip|auto>\r\n"
+    "  espflash batch image <index-0-based> <path> <offset> | start | abort\r\n"
+    "  espflash flash <lfs|sd> <path> <offset> [chip|auto]\r\n"
+    "  espflash status | boot | release | reset\r\n"
+    "  espflash cancel-flash          request cancellation of active flash\r\n"
+    "  espflash upload <lfs|sd> <path> <size> <crc32>\r\n"
+    "  espflash mkdir <lfs|sd> <path> create upload destination folder\r\n"
+    "  espflash data <id> <offset> <hex> | finish <id> | cancel <id>\r\n"
+    "  espflash cancel-active         cancel the current upload and remove .part\r\n"
     "  stop                            stop attack (WiFi or BLE spam)\r\n"
     "  status                          show status\r\n"
     "  wl add <mac> [bssid|sta]        whitelist add (never deauth)\r\n"
@@ -138,9 +155,15 @@ static int tokenize(char *line, char *tok[MAX_TOK])
     while (*p && n < MAX_TOK) {
         while (*p && isspace((unsigned char)*p)) p++;
         if (!*p) break;
-        tok[n++] = p;
-        while (*p && !isspace((unsigned char)*p)) p++;
-        if (*p) *p++ = '\0';
+        if (*p == '"') {
+            tok[n++] = ++p;
+            while (*p && *p != '"') p++;
+            if (*p) *p++ = '\0';
+        } else {
+            tok[n++] = p;
+            while (*p && !isspace((unsigned char)*p)) p++;
+            if (*p) *p++ = '\0';
+        }
     }
     return n;
 }
@@ -193,13 +216,430 @@ static void cmd_acl(int argc, char *argv[], bool whitelist)
     io_log("%s: unknown subcommand `%s`\r\n", argv[0], sub);
 }
 
-/* Emit one LittleFS file entry for the Home file manager (`fs ls`). Paths are
- * quoted so the app can parse names containing any non-quote character. */
-static void fs_ls_entry(const char *rel_path, size_t size, void *ctx)
+static void fs_ls_entry(const char *rel_path, size_t size, bool is_directory,
+                        void *ctx)
 {
     (void)ctx;
-    io_log("fs: ENT path=\"%s\" size=%u\r\n", rel_path, (unsigned)size);
+    if (is_directory) {
+        io_log("fs: DIR path=\"%s\"\r\n", rel_path);
+    } else {
+        io_log("fs: ENT path=\"%s\" size=%u\r\n", rel_path, (unsigned)size);
+    }
 }
+
+static void sd_ls_entry(const char *rel_path, size_t size, void *ctx)
+{
+    (void)ctx;
+    io_log("sd: ENT path=\"%s\" size=%u\r\n", rel_path, (unsigned)size);
+}
+
+static bool sd_collect_path(int argc, char *argv[], int first, char *path,
+                            size_t path_size)
+{
+    size_t used = 0;
+    for (int i = first; i < argc; i++) {
+        size_t part_len = strlen(argv[i]);
+        size_t separator = i == first ? 0 : 1;
+        if (part_len + separator >= path_size - used) {
+            return false;
+        }
+        if (separator) {
+            path[used++] = ' ';
+        }
+        memcpy(path + used, argv[i], part_len);
+        used += part_len;
+    }
+    path[used] = '\0';
+    if (used >= 2 && path[0] == '"' && path[used - 1] == '"') {
+        memmove(path, path + 1, used - 2);
+        path[used - 2] = '\0';
+        used -= 2;
+    }
+    return used > 0;
+}
+
+static void cmd_sd(int argc, char *argv[])
+{
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        bool present, mounted, busy, radio_safe;
+        uint64_t total = 0, used = 0, free_bytes = 0;
+        sd_storage_get_state(&present, &mounted, &busy, &radio_safe);
+        if (mounted && !busy) {
+            esp_err_t info_err = sd_storage_info(&total, &used, &free_bytes);
+            if (info_err != ESP_OK) {
+                io_log("sd: status failed err=%s\r\n",
+                       esp_err_to_name(info_err));
+            }
+
+        }
+        io_log("sd: STATUS present=%u mounted=%u busy=%u safe=%u total=%" PRIu64 " used=%" PRIu64 " free=%" PRIu64 "\r\n",
+               present ? 1U : 0U, mounted ? 1U : 0U, busy ? 1U : 0U,
+               radio_safe ? 1U : 0U, total, used, free_bytes);
+        return;
+    }
+
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    if (strcasecmp(argv[1], "mount") == 0) {
+        err = sd_storage_mount();
+    } else if (strcasecmp(argv[1], "unmount") == 0) {
+        err = sd_storage_unmount();
+    } else if (strcasecmp(argv[1], "format") == 0) {
+        err = sd_storage_format();
+    } else if (strcasecmp(argv[1], "ls") == 0) {
+        uint64_t total = 0, used = 0, free_bytes = 0;
+        err = sd_storage_info(&total, &used, &free_bytes);
+        if (err == ESP_OK) {
+            io_log("sd: LS total=%" PRIu64 " used=%" PRIu64 " free=%" PRIu64 "\r\n",
+                   total, used, free_bytes);
+            err = sd_storage_walk(sd_ls_entry, NULL);
+            io_log("sd: LS end\r\n");
+            if (err == ESP_OK) {
+                return;
+            }
+        }
+    } else if ((strcasecmp(argv[1], "cp-to-lfs") == 0 ||
+                strcasecmp(argv[1], "cp-from-lfs") == 0 ||
+                strcasecmp(argv[1], "get") == 0 ||
+                strcasecmp(argv[1], "preview") == 0) && argc >= 3) {
+        char path[128];
+        if (!sd_collect_path(argc, argv, 2, path, sizeof(path))) {
+            err = ESP_ERR_INVALID_ARG;
+        } else if (strcasecmp(argv[1], "cp-to-lfs") == 0) {
+            err = sd_storage_copy_to_littlefs(path);
+        } else if (strcasecmp(argv[1], "cp-from-lfs") == 0) {
+            err = sd_storage_copy_from_littlefs(path);
+        } else if (strcasecmp(argv[1], "get") == 0) {
+            err = sd_storage_download_start(path, SIZE_MAX);
+        } else {
+            err = sd_storage_download_start(path, 2048);
+        }
+    } else if (strcasecmp(argv[1], "cancel") == 0 && argc >= 3) {
+        char *id_end = NULL;
+        unsigned long id = strtoul(argv[2], &id_end, 10);
+        if (*argv[2] == '\0' || *id_end != '\0' || id > UINT32_MAX) {
+            err = ESP_ERR_INVALID_ARG;
+        } else {
+            err = sd_storage_download_cancel((uint32_t)id);
+        }
+    } else if (strcasecmp(argv[1], "ack") == 0 && argc >= 4) {
+        char *id_end = NULL;
+        char *offset_end = NULL;
+        unsigned long id = strtoul(argv[2], &id_end, 10);
+        unsigned long offset = strtoul(argv[3], &offset_end, 10);
+        if (*argv[2] == '\0' || *id_end != '\0' || *argv[3] == '\0' ||
+            *offset_end != '\0' || id > UINT32_MAX || offset > SIZE_MAX) {
+            err = ESP_ERR_INVALID_ARG;
+        } else {
+            err = sd_storage_download_ack((uint32_t)id, (size_t)offset);
+        }
+    }
+
+    if (err == ESP_OK) {
+        if (strcasecmp(argv[1], "mount") == 0 ||
+            strcasecmp(argv[1], "format") == 0) {
+            esp_err_t radio_err = nrf24_module_init();
+            if (radio_err != ESP_OK &&
+                radio_err != ESP_ERR_INVALID_STATE) {
+                io_log("nrf24: initialization after SD mount failed (%s)\r\n",
+                       esp_err_to_name(radio_err));
+            }
+        }
+        io_log("sd: %s ok\r\n", argv[1]);
+    } else {
+        io_log("sd: %s failed err=%s\r\n", argv[1], esp_err_to_name(err));
+    }
+}
+
+static bool parse_flash_chip(const char *name, target_chip_t *chip)
+{
+    if (strcasecmp(name, "auto") == 0) {
+        *chip = ESP_UNKNOWN_CHIP;
+        return true;
+    }
+    static const struct {
+        const char *name;
+        target_chip_t chip;
+    } chips[] = {
+        {"esp8266", ESP8266_CHIP},
+        {"esp32", ESP32_CHIP},
+        {"esp32s2", ESP32S2_CHIP},
+        {"esp32s3", ESP32S3_CHIP},
+        {"esp32c2", ESP32C2_CHIP},
+        {"esp32c3", ESP32C3_CHIP},
+        {"esp32c5", ESP32C5_CHIP},
+        {"esp32c6", ESP32C6_CHIP},
+        {"esp32h2", ESP32H2_CHIP},
+        {"esp32p4", ESP32P4_CHIP},
+        {"esp32c61", ESP32C61_CHIP},
+        {"esp32s31", ESP32S31_CHIP},
+        {"esp32h21", ESP32H21_CHIP},
+        {"esp32h4", ESP32H4_CHIP},
+    };
+    for (size_t i = 0; i < sizeof(chips) / sizeof(chips[0]); i++) {
+        if (strcasecmp(name, chips[i].name) == 0) {
+            *chip = chips[i].chip;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool parse_u32(const char *text, int base, uint32_t *value)
+{
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed = strtoul(text, &end, base);
+    if (text[0] == '\0' || *end != '\0' || errno == ERANGE ||
+        parsed > UINT32_MAX) return false;
+    *value = (uint32_t)parsed;
+    return true;
+}
+
+static bool parse_upload_hex(const char *text, uint8_t *data, size_t *size)
+{
+    size_t length = strlen(text);
+    if (length == 0 || (length & 1U) != 0 ||
+        length / 2 > ESP_UPLOAD_CHUNK_MAX) {
+        return false;
+    }
+    for (size_t i = 0; i < length / 2; i++) {
+        char pair[3] = {text[i * 2], text[i * 2 + 1], '\0'};
+        char *end = NULL;
+        unsigned long value = strtoul(pair, &end, 16);
+        if (*end != '\0' || value > UINT8_MAX) return false;
+        data[i] = (uint8_t)value;
+    }
+    *size = length / 2;
+    return true;
+}
+
+static void cmd_espflash(int argc, char *argv[])
+{
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        uint32_t upload_id = 0;
+        uint32_t upload_offset = 0;
+        uint32_t upload_size = 0;
+        uint32_t flash_programmed = 0;
+        uint32_t flash_size = 0;
+        esp_flasher_result_t flash_result = ESP_FLASHER_RESULT_NONE;
+        bool upload_active = esp_upload_get_status(
+            &upload_id, &upload_offset, &upload_size);
+        esp_flasher_get_operation_status(
+            &flash_result, &flash_programmed, &flash_size);
+        const char *flash_result_name =
+            flash_result == ESP_FLASHER_RESULT_RUNNING ? "running" :
+            flash_result == ESP_FLASHER_RESULT_OK ? "ok" :
+            flash_result == ESP_FLASHER_RESULT_CANCELLED ? "cancelled" :
+            flash_result == ESP_FLASHER_RESULT_FAILED ? "failed" : "none";
+        io_log("espflash: STATUS busy=%u cancel=%u boot=%u upload=%u id=%" PRIu32
+               " offset=%" PRIu32 " size=%" PRIu32 " flash=%s progress=%" PRIu32
+               " total=%" PRIu32 "\r\n",
+               esp_flasher_is_busy() ? 1U : 0U,
+               esp_flasher_cancel_is_requested() ? 1U : 0U,
+               esp_flasher_boot_is_asserted() ? 1U : 0U,
+               upload_active ? 1U : 0U,
+               upload_id, upload_offset, upload_size, flash_result_name,
+               flash_programmed, flash_size);
+        return;
+    }
+
+    esp_err_t err;
+    if (strcasecmp(argv[1], "boot") == 0) {
+        err = esp_flasher_enter_bootloader();
+    } else if (strcasecmp(argv[1], "release") == 0) {
+        err = esp_flasher_release_boot();
+    } else if (strcasecmp(argv[1], "reset") == 0) {
+        err = esp_flasher_reset_target();
+    } else if (strcasecmp(argv[1], "cancel-flash") == 0) {
+        err = esp_flasher_cancel();
+        if (err == ESP_OK) {
+            io_log("espflash: CANCEL_REQUESTED\r\n");
+            return;
+        }
+    } else if (strcasecmp(argv[1], "batch") == 0) {
+        if (argc >= 3 && strcasecmp(argv[2], "begin") == 0) {
+            uint32_t image_count = 0;
+            if (argc != 6 ||
+                !parse_u32(argv[4], 10, &image_count) ||
+                image_count > UINT8_MAX) {
+                io_log("usage: espflash batch begin <lfs|sd> <count> <chip|auto>\r\n");
+                return;
+            }
+            esp_flasher_storage_t storage;
+            if (strcasecmp(argv[3], "lfs") == 0) {
+                storage = ESP_FLASHER_STORAGE_LITTLEFS;
+            } else if (strcasecmp(argv[3], "sd") == 0) {
+                storage = ESP_FLASHER_STORAGE_SD;
+            } else {
+                io_log("espflash: storage must be lfs or sd\r\n");
+                return;
+            }
+            target_chip_t expected_chip = ESP_UNKNOWN_CHIP;
+            if (!parse_flash_chip(argv[5], &expected_chip)) {
+                io_log("espflash: unsupported chip profile `%s'\r\n", argv[5]);
+                return;
+            }
+            err = esp_flasher_batch_begin(
+                storage, (uint8_t)image_count, expected_chip);
+            if (err == ESP_OK) {
+                io_log("espflash: BATCH_READY count=%" PRIu32 "\r\n",
+                       image_count);
+                return;
+            }
+        } else if (argc >= 3 && strcasecmp(argv[2], "image") == 0) {
+            uint32_t index = 0;
+            uint32_t offset = 0;
+            if (argc != 6 ||
+                !parse_u32(argv[3], 10, &index) ||
+                index >= ESP_FLASHER_MAX_IMAGES ||
+                !parse_u32(argv[5], 0, &offset)) {
+                io_log("usage: espflash batch image <index-0-based> <path> <offset>\r\n");
+                return;
+            }
+            err = esp_flasher_batch_add_image(
+                (uint8_t)index, argv[4], offset);
+            if (err == ESP_OK) {
+                io_log("espflash: BATCH_IMAGE_READY index=%" PRIu32 "\r\n",
+                       index);
+                return;
+            }
+        } else if (argc == 3 && strcasecmp(argv[2], "start") == 0) {
+            err = esp_flasher_batch_start();
+            if (err == ESP_OK) {
+                io_log("espflash: ACCEPTED; hold target BOOT and manually reset/power-cycle\r\n");
+                return;
+            }
+        } else if (argc == 3 && strcasecmp(argv[2], "abort") == 0) {
+            err = esp_flasher_batch_abort();
+            if (err == ESP_OK) {
+                io_log("espflash: BATCH_ABORTED\r\n");
+                return;
+            }
+        } else {
+            io_log("usage: espflash batch begin|image|start|abort ...\r\n");
+            return;
+        }
+    } else if (strcasecmp(argv[1], "flash") == 0) {
+        if (argc < 5 || argc > 6) {
+            io_log("usage: espflash flash <lfs|sd> <path> <offset> [chip|auto]\r\n");
+            return;
+        }
+        esp_flasher_storage_t storage;
+        if (strcasecmp(argv[2], "lfs") == 0) {
+            storage = ESP_FLASHER_STORAGE_LITTLEFS;
+        } else if (strcasecmp(argv[2], "sd") == 0) {
+            storage = ESP_FLASHER_STORAGE_SD;
+        } else {
+            io_log("espflash: storage must be lfs or sd\r\n");
+            return;
+        }
+        uint32_t offset = 0;
+        if (!parse_u32(argv[4], 0, &offset)) {
+            io_log("espflash: invalid flash offset\r\n");
+            return;
+        }
+        target_chip_t expected_chip = ESP_UNKNOWN_CHIP;
+        if (argc == 6 && !parse_flash_chip(argv[5], &expected_chip)) {
+            io_log("espflash: unsupported chip profile `%s'\r\n", argv[5]);
+            return;
+        }
+        err = esp_flasher_start_manual(
+            storage, argv[3], offset, expected_chip);
+        if (err == ESP_OK) {
+            io_log("espflash: ACCEPTED; hold target BOOT and manually reset/power-cycle\r\n");
+            return;
+        }
+    } else if (strcasecmp(argv[1], "upload") == 0) {
+        uint32_t total_size = 0;
+        uint32_t expected_crc = 0;
+        if (argc != 6 ||
+            (strcasecmp(argv[2], "lfs") != 0 &&
+             strcasecmp(argv[2], "sd") != 0) ||
+            !parse_u32(argv[4], 10, &total_size) ||
+            !parse_u32(argv[5], 16, &expected_crc)) {
+            io_log("usage: espflash upload <lfs|sd> <path> <size> <crc32-hex>\r\n");
+            return;
+        }
+        uint32_t transfer_id = 0;
+        esp_flasher_storage_t storage = strcasecmp(argv[2], "lfs") == 0
+            ? ESP_FLASHER_STORAGE_LITTLEFS : ESP_FLASHER_STORAGE_SD;
+        err = esp_upload_begin(
+            storage, argv[3], total_size, expected_crc, &transfer_id);
+        if (err == ESP_OK) {
+            io_log("espflash: UPLOAD id=%" PRIu32 " chunk=%u\r\n",
+                   transfer_id, (unsigned)ESP_UPLOAD_CHUNK_MAX);
+            return;
+        }
+    } else if (strcasecmp(argv[1], "mkdir") == 0) {
+        if (argc != 4) {
+            io_log("usage: espflash mkdir <lfs|sd> <path>\r\n");
+            return;
+        }
+        esp_flasher_storage_t storage;
+        if (strcasecmp(argv[2], "lfs") == 0) {
+            storage = ESP_FLASHER_STORAGE_LITTLEFS;
+        } else if (strcasecmp(argv[2], "sd") == 0) {
+            storage = ESP_FLASHER_STORAGE_SD;
+        } else {
+            io_log("espflash: storage must be lfs or sd\r\n");
+            return;
+        }
+        err = esp_upload_create_directory(storage, argv[3]);
+        if (err == ESP_OK) {
+            io_log("espflash: DIRECTORY_CREATED path=\"%s\"\r\n", argv[3]);
+            return;
+        }
+    } else if (strcasecmp(argv[1], "data") == 0) {
+        uint32_t transfer_id = 0;
+        uint32_t offset = 0;
+        uint8_t data[ESP_UPLOAD_CHUNK_MAX];
+        size_t size = 0;
+        uint32_t next_offset = 0;
+        if (argc != 5 || !parse_u32(argv[2], 10, &transfer_id) ||
+            !parse_u32(argv[3], 10, &offset) ||
+            !parse_upload_hex(argv[4], data, &size)) {
+            io_log("usage: espflash data <id> <offset> <hex>\r\n");
+            return;
+        }
+        err = esp_upload_write(
+            transfer_id, offset, data, size, &next_offset);
+        if (err == ESP_OK) {
+            io_log("espflash: ACK id=%" PRIu32 " offset=%" PRIu32 "\r\n",
+                   transfer_id, next_offset);
+            return;
+        }
+    } else if (strcasecmp(argv[1], "finish") == 0 ||
+               strcasecmp(argv[1], "cancel") == 0) {
+        uint32_t transfer_id = 0;
+        if (argc != 3 || !parse_u32(argv[2], 10, &transfer_id)) {
+            io_log("usage: espflash %s <id>\r\n", argv[1]);
+            return;
+        }
+        bool finish = strcasecmp(argv[1], "finish") == 0;
+        err = finish
+            ? esp_upload_finish(transfer_id)
+            : esp_upload_cancel(transfer_id);
+        if (err == ESP_OK) {
+            io_log("espflash: %s id=%" PRIu32 " ok\r\n",
+                   finish ? "UPLOAD_DONE" : "UPLOAD_CANCELLED", transfer_id);
+            return;
+        }
+    } else if (strcasecmp(argv[1], "cancel-active") == 0) {
+        uint32_t transfer_id = 0;
+        (void)esp_upload_get_status(&transfer_id, NULL, NULL);
+        err = esp_upload_cancel_active();
+        if (err == ESP_OK) {
+            io_log("espflash: UPLOAD_CANCELLED id=%" PRIu32 " ok\r\n",
+                   transfer_id);
+            return;
+        }
+    } else {
+        io_log("espflash: usage status|batch|flash|boot|release|reset|cancel-flash|upload|mkdir|data|finish|cancel|cancel-active\r\n");
+        return;
+    }
+    io_log("espflash: ERROR err=%s\r\n", esp_err_to_name(err));
+}
+
 
 static void run_line(char *line)
 {
@@ -209,7 +649,20 @@ static void run_line(char *line)
 
     const char *cmd = argv[0];
 
+    bool espflash_command = strcasecmp(cmd, "espflash") == 0;
+    if (wifi_ctrl_scan_is_running() && espflash_command && argc >= 2 &&
+        strcasecmp(argv[1], "status") != 0 &&
+        strcasecmp(argv[1], "boot") != 0 &&
+        strcasecmp(argv[1], "release") != 0 &&
+        strcasecmp(argv[1], "cancel-flash") != 0 &&
+        strcasecmp(argv[1], "finish") != 0 &&
+        strcasecmp(argv[1], "cancel") != 0 &&
+        strcasecmp(argv[1], "cancel-active") != 0) {
+        io_log("espflash: ERROR err=ESP_ERR_INVALID_STATE; stop Wi-Fi scan first\r\n");
+        return;
+    }
     if (wifi_ctrl_scan_is_running() &&
+        !espflash_command &&
         !(strcasecmp(cmd, "scan") == 0 && argc >= 2 &&
           (strcasecmp(argv[1], "stop") == 0 ||
            strcasecmp(argv[1], "clear") == 0))) {
@@ -219,6 +672,14 @@ static void run_line(char *line)
 
     if (strcasecmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         io_log("%s", HELP);
+        return;
+    }
+    if (strcasecmp(cmd, "sd") == 0) {
+        cmd_sd(argc, argv);
+        return;
+    }
+    if (strcasecmp(cmd, "espflash") == 0) {
+        cmd_espflash(argc, argv);
         return;
     }
     if (strcasecmp(cmd, "scan") == 0 && argc >= 2 &&
@@ -1146,18 +1607,41 @@ static void run_line(char *line)
             return;
         }
         if (strcasecmp(sub, "rm") == 0) {
-            if (argc < 3) { io_log("usage: fs rm <path>\r\n"); return; }
+            if (argc != 3) { io_log("usage: fs rm <path>\r\n"); return; }
             esp_err_t e = storage_fs_delete(argv[2]);
             if (e == ESP_OK) {
                 io_log("fs: RM path=\"%s\" ok\r\n", argv[2]);
             } else if (e == ESP_ERR_NOT_FOUND) {
                 io_log("fs: RM path=\"%s\" notfound\r\n", argv[2]);
-            } else {
+            } else if (e == ESP_ERR_INVALID_ARG) {
                 io_log("fs: RM path=\"%s\" bad\r\n", argv[2]);
+            } else {
+                io_log("fs: RM path=\"%s\" failed=%s\r\n", argv[2],
+                       esp_err_to_name(e));
             }
             return;
         }
-        io_log("usage: fs <ls|info|rm <path>>\r\n");
+        if (strcasecmp(sub, "mkdir") == 0) {
+            if (argc != 3) { io_log("usage: fs mkdir <path>\r\n"); return; }
+            esp_err_t e = storage_fs_create_directory(argv[2]);
+            const char *result = e == ESP_OK ? "ok" :
+                e == ESP_ERR_INVALID_STATE ? "exists" :
+                e == ESP_ERR_INVALID_ARG ? "bad" : "failed";
+            io_log("fs: MKDIR path=\"%s\" %s\r\n", argv[2], result);
+            return;
+        }
+        if (strcasecmp(sub, "mv") == 0) {
+            if (argc != 4) { io_log("usage: fs mv <old-path> <new-path>\r\n"); return; }
+            esp_err_t e = storage_fs_rename(argv[2], argv[3]);
+            const char *result = e == ESP_OK ? "ok" :
+                e == ESP_ERR_NOT_FOUND ? "notfound" :
+                e == ESP_ERR_INVALID_STATE ? "exists" :
+                e == ESP_ERR_INVALID_ARG ? "bad" : "failed";
+            io_log("fs: MV old=\"%s\" new=\"%s\" %s\r\n",
+                   argv[2], argv[3], result);
+            return;
+        }
+        io_log("usage: fs <ls|info|rm|mkdir|mv> ...\r\n");
         return;
     }
 

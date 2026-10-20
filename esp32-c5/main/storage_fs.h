@@ -35,15 +35,15 @@ esp_err_t storage_fs_info(size_t *total, size_t *used);
  * the path relative to STORAGE_FS_BASE (e.g. "remote.ir", "portal/creds.log"),
  * never with a leading slash. */
 typedef void (*storage_fs_walk_cb)(const char *rel_path, size_t size,
-                                    void *ctx);
+                                   bool is_directory, void *ctx);
 
 /* Recursively walk every file under STORAGE_FS_BASE (all subdirectories),
- * invoking cb for each regular file. Directories are descended, not reported.
+ * invoking cb for each regular file and directory.
  * Returns ESP_ERR_INVALID_STATE if not mounted. */
 esp_err_t storage_fs_walk(storage_fs_walk_cb cb, void *ctx);
 
-/* Delete one file by its path relative to STORAGE_FS_BASE. Rejects absolute
- * paths and any path containing ".." (no escaping the mount). Returns
- * ESP_ERR_NOT_FOUND if the file does not exist, ESP_ERR_INVALID_ARG on a bad
- * path, ESP_ERR_INVALID_STATE if not mounted. */
+esp_err_t storage_fs_create_directory(const char *rel_path);
+esp_err_t storage_fs_rename(const char *old_rel_path, const char *new_rel_path);
+
+/* Delete one file or an entire directory tree below STORAGE_FS_BASE. */
 esp_err_t storage_fs_delete(const char *rel_path);
