@@ -12,7 +12,7 @@
 #include "ble_scanner.h"
 #include "ble_spectrum.h"
 #include "ble_wardrive.h"
-#include "nrf24.h"
+#include "radio_modules.h"
 #include "sd_storage.h"
 #include "spi_shared_bus.h"
 #include "monitor.h"
@@ -59,6 +59,10 @@ void app_main(void)
                esp_err_to_name(spi_err));
     }
 
+    if (spi_radios_safe) {
+        radio_modules_init();
+    }
+
     targets_init();
     acl_init();
     attack_init();
@@ -91,12 +95,6 @@ void app_main(void)
 
     ble_wardrive_init();
     io_log("main: ble wardrive module ready\r\n");
-
-    if (spi_radios_safe && nrf24_module_init() == ESP_OK) {
-        io_log("main: nrf24 module ready\r\n");
-    } else {
-        io_log("main: nrf24 not available\r\n");
-    }
 
     esp_err_t wlscan_err = wifi_live_scan_init();
     if (wlscan_err == ESP_OK) {

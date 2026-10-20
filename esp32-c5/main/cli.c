@@ -28,6 +28,8 @@
 #include "ble_spectrum.h"
 #include "ble_wardrive.h"
 #include "nrf24.h"
+#include "cc1101.h"
+#include "radio_modules.h"
 #include "sd_storage.h"
 #include "monitor.h"
 #include "spectrum.h"
@@ -133,6 +135,7 @@ static const char *HELP =
     "  espflash mkdir <lfs|sd> <path> create upload destination folder\r\n"
     "  espflash data <id> <offset> <hex> | finish <id> | cancel <id>\r\n"
     "  espflash cancel-active         cancel the current upload and remove .part\r\n"
+    "  cc1101 status | sleep | wake    CC1101 presence and low-power control\r\n"
     "  stop                            stop attack (WiFi or BLE spam)\r\n"
     "  status                          show status\r\n"
     "  wl add <mac> [bssid|sta]        whitelist add (never deauth)\r\n"
@@ -337,10 +340,10 @@ static void cmd_sd(int argc, char *argv[])
     if (err == ESP_OK) {
         if (strcasecmp(argv[1], "mount") == 0 ||
             strcasecmp(argv[1], "format") == 0) {
-            esp_err_t radio_err = nrf24_module_init();
+            esp_err_t radio_err = radio_modules_init();
             if (radio_err != ESP_OK &&
                 radio_err != ESP_ERR_INVALID_STATE) {
-                io_log("nrf24: initialization after SD mount failed (%s)\r\n",
+                io_log("main: radio module initialization incomplete (%s)\r\n",
                        esp_err_to_name(radio_err));
             }
         }
@@ -641,6 +644,27 @@ static void cmd_espflash(int argc, char *argv[])
 }
 
 
+static void cmd_cc1101(int argc, char *argv[])
+{
+    if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
+        io_log("cc1101: STATUS present=%u sleeping=%u\r\n",
+               cc1101_is_present() ? 1U : 0U,
+               cc1101_is_sleeping() ? 1U : 0U);
+        return;
+    }
+    esp_err_t err;
+    if (strcasecmp(argv[1], "sleep") == 0) {
+        err = cc1101_sleep();
+    } else if (strcasecmp(argv[1], "wake") == 0) {
+        err = cc1101_wake();
+    } else {
+        io_log("cc1101: usage status|sleep|wake\r\n");
+        return;
+    }
+    io_log("cc1101: %s %s\r\n", argv[1],
+           err == ESP_OK ? "ok" : esp_err_to_name(err));
+}
+
 static void run_line(char *line)
 {
     char *argv[MAX_TOK];
@@ -680,6 +704,10 @@ static void run_line(char *line)
     }
     if (strcasecmp(cmd, "espflash") == 0) {
         cmd_espflash(argc, argv);
+        return;
+    }
+    if (strcasecmp(cmd, "cc1101") == 0) {
+        cmd_cc1101(argc, argv);
         return;
     }
     if (strcasecmp(cmd, "scan") == 0 && argc >= 2 &&

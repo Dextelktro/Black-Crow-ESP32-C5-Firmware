@@ -69,11 +69,11 @@ esp32-c5/
     ├── cli.{c,h}               command parser (transport-agnostic)
     ├── transport_serial.{c,h}  USB-Serial-JTAG TX/RX
     ├── transport_ble.{c,h}     NimBLE NUS GATT peripheral and log transport
-    ??? spi_shared_bus.{c,h}    shared SPI2 host for storage and nRF24
-    ??? sd_storage.{c,h}        SD mount, files, copy, and download
-    ??? esp_flasher.{c,h}       UART target detection and multi-image flashing
-    ??? esp_upload.{c,h}        verified BLE file upload to LittleFS or SD
-    ├── nrf24.{c,h}             nRF24L01+ SPI text link
+    ├── spi_shared_bus.{c,h}    shared SPI2 host for storage and radios
+    ├── radio_modules.{c,h}     deferred radio initialization after SD mount
+    ├── sd_storage.{c,h}        SD mount, files, copy, and download
+    ├── cc1101.{c,h}            CC1101 SPI presence and sleep control
+    ├── nrf24.{c,h}             nRF24L01+ SPI module
     ├── frames.{c,h}            802.11 deauth / disassoc / auth-flood builders
     ├── wifi_ctrl.{c,h}         STA-mode init + dual-band scan
     ├── sniffer.{c,h}           promiscuous STA discovery
@@ -110,8 +110,7 @@ mode <broadcast|unicast|disassoc|authflood|mixed>
 start <duration_sec>
 stop                          stop attack early
 status
-nrf24 status                  show nRF24 radio status
-nrf24 send <text>             send text (maximum 31 bytes)
+nrf status                    show nRF24 radio status
 wl add <mac> [bssid|sta]      whitelist add (never deauth) — persisted
 wl rm  <mac> | wl ls | wl clear
 bl add <mac> [bssid|sta]      blacklist add (always deauth) — persisted
@@ -124,21 +123,22 @@ ir save <name>                save the last captured signal to LittleFS
 ir ls | ir info <name> | ir rm <name>              saved signal library
 ir emulate <name> [count] | ir emulate stop        replay a saved signal
 ir status                     IR module + storage status
-    "sd status | ls                SD card status and file listing\r\n"
-    "sd mount | unmount | format   mount, safely eject, or format the card\r\n"
-    "sd get <path> | preview <path> download or preview an SD file\r\n"
-    "sd cp-to-lfs <path>           copy an SD file into LittleFS\r\n"
-    "sd cp-from-lfs <path>         copy a LittleFS file onto the SD card\r\n"
-    "espflash status               show UART flasher state\r\n"
-    "espflash flash <lfs|sd> <path> <offset> [chip|auto]\r\n"
-    "espflash batch begin <lfs|sd> <count> <chip|auto>\r\n"
-    "espflash batch image <index-0-based> <path> <offset> | start | abort\r\n"
-    "espflash mkdir <lfs|sd> <path> create an upload directory\r\n"
-    "espflash upload <lfs|sd> <path> <size> <crc32-hex>\r\n"
-    "espflash data <id> <offset> <hex> | finish <id> | cancel <id>\r\n"
-    "espflash cancel-active         remove the current incomplete upload\r\n"
-    "espflash boot | release       assert or release target BOOT (GPIO10)\r\n"
-    "espflash reset                reports unsupported while RESET is -1\r\n"
+sd status | ls                SD card status and file listing
+sd mount | unmount | format   mount, safely eject, or format the card
+sd get <path> | preview <path> download or preview an SD file
+sd cp-to-lfs <path>           copy an SD file into LittleFS
+sd cp-from-lfs <path>         copy a LittleFS file onto the SD card
+espflash status               show UART flasher state
+espflash flash <lfs|sd> <path> <offset> [chip|auto]
+espflash batch begin <lfs|sd> <count> <chip|auto>
+espflash batch image <index-0-based> <path> <offset> | start | abort
+espflash mkdir <lfs|sd> <path> create an upload directory
+espflash upload <lfs|sd> <path> <size> <crc32-hex>
+espflash data <id> <offset> <hex> | finish <id> | cancel <id>
+espflash cancel-active         remove the current incomplete upload
+espflash boot | release       assert or release target BOOT (GPIO10)
+espflash reset                reports unsupported while RESET is -1
+cc1101 status | sleep | wake  CC1101 presence and low-power control
 reset                         soft-reset the chip (esp_restart)
 ```
 
@@ -206,17 +206,14 @@ Connect the module to 3.3 V logic (never 5 V) and a common ground:
 | CSN       | 9             |
 | CE        | 8             |
 
-The firmware listens continuously and accepts text transmissions through
-`nrf24 send`. Payloads are fixed-width on air, with a 31-byte text limit.
-The peer must use channel 76, 1 Mbps, the 5-byte address
-`E7:D3:F4:A1:B2`, and auto-ack on pipe 0. Received messages are printed to the
-serial/BLE log transports. `nrf24 status` reports whether initialization
-succeeded.
+The radio is powered down while idle. Scanner, sniffer, and other nRF24
+operations claim it exclusively and power it up until they release the radio.
+`nrf status` reports whether initialization succeeded.
 
-### Shared SPI and SD card
+### Shared SPI, SD card, and CC1101
 
-The SD card and nRF24L01+ share SPI2. The firmware initializes the
-bus, mounts a detected SD card, and only then probes the nRF24 radio; if a
+The SD card, nRF24L01+, and CC1101 share SPI2. The firmware initializes the
+bus, mounts a detected SD card, and only then probes the radio modules; if a
 detected card cannot be mounted, radio SPI access stays blocked to avoid
 clocks reaching a card that has not entered SPI mode.
 
@@ -225,6 +222,7 @@ clocks reaching a card that has not entered SPI mode.
 | SCK / MISO / MOSI | 6 / 2 / 7 | Shared bus |
 | SD CS / card detect (CD) | 1 / 0 | Up to 20 MHz |
 | nRF24 CSN / CE | 9 / 8 | 4 MHz |
+| CC1101 CS / GDO0 | 23 / 24 | 2 MHz |
 
 CD is active-low and uses an ESP internal pull-up. Confirm the card socket's
 CD switch is wired to ground when a card is inserted. The SD card's CMD and
@@ -234,7 +232,7 @@ configuration ignores the strap, but if JTAG source selection is enabled by
 eFuse, the SD CMD pull-up biases GPIO7 high during reset and can select the
 USB Serial/JTAG source. Verify the board's eFuse/debug configuration before
 relying on pad-JTAG.
-Both CS lines are held high while idle. Keep the SPI wiring short and
+All three CS lines are held high while idle. Keep the SPI wiring short and
 let the ESP-IDF SPI/SD drivers generate SCK only for transactions. The SD SPI
 driver is configured for up to 20 MHz; Espressif notes that shared-bus loading
 can require a lower rate, so verify signal integrity on the assembled hardware.
@@ -247,6 +245,8 @@ limited to 2 KiB. Use `sd unmount` before physically removing a mounted card.
 See Espressif's [SD SPI sharing](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c5/api-reference/peripherals/sdspi_share.html),
 [SD pull-up requirements](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c5/api-reference/peripherals/sd_pullup_requirements.html),
 and [ESP32-C5 boot configuration](https://documentation.espressif.com/esp32-c5_datasheet_en.html#page=36);
+the CC1101 command definitions are in the
+[TI datasheet](https://www.ti.com/lit/ds/symlink/cc1101.pdf).
 
 ### Infrared (universal remote + receiver)
 
