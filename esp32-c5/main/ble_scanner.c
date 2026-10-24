@@ -9,6 +9,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #include "host/ble_hs.h"
@@ -35,8 +36,8 @@ static int64_t           s_started_us = 0;
 static uint8_t           s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static bool              s_addr_ready = false;
 
-/* Buffer devices */
-static ble_scan_entry_t  s_devices[BLE_SCAN_MAX_DEVICES];
+/* Keep scan history available for dump/clear after discovery stops. */
+static ble_scan_entry_t *s_devices;
 static uint32_t          s_device_count = 0;
 
 /* ============================================================
@@ -293,8 +294,18 @@ static void progress_task(void *arg)
  * ============================================================ */
 esp_err_t ble_scanner_init(void)
 {
-    s_lock = xSemaphoreCreateMutex();
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
+    if (!s_devices) {
+        s_devices = heap_caps_calloc(BLE_SCAN_MAX_DEVICES, sizeof(*s_devices),
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_devices) {
+            ESP_LOGE(TAG, "BLE scan result PSRAM allocation failed");
+            vSemaphoreDelete(s_lock);
+            s_lock = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+    }
     s_device_count = 0;
     s_running = false;
     s_stop_requested = false;
@@ -303,7 +314,7 @@ esp_err_t ble_scanner_init(void)
 
 esp_err_t ble_scanner_start(uint32_t duration_sec, bool active_scan)
 {
-    if (!s_lock) return ESP_ERR_INVALID_STATE;
+    if (!s_lock || !s_devices) return ESP_ERR_INVALID_STATE;
 
     if (s_running) {
         io_log("blescan: already running\r\n");

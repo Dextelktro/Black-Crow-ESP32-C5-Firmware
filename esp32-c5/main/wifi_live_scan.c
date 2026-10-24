@@ -67,7 +67,8 @@ typedef struct {
 } wl_entry_t;
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-static wl_entry_t   s_tbl[WLSCAN_MAX_APS];
+/* The RX callback accesses this under s_mux; keep it internal and scan-scoped. */
+static wl_entry_t  *s_tbl;
 static target_ap_t *s_target_snapshot;
 
 static TaskHandle_t  s_task = NULL;
@@ -202,6 +203,10 @@ static void wl_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     int64_t now   = esp_timer_get_time();
 
     portENTER_CRITICAL(&s_mux);
+    if (!s_tbl) {
+        portEXIT_CRITICAL(&s_mux);
+        return;
+    }
     int found = -1, free_slot = -1;
     for (int i = 0; i < WLSCAN_MAX_APS; i++) {
         if (!s_tbl[i].used) { if (free_slot < 0) free_slot = i; continue; }
@@ -406,11 +411,20 @@ static esp_err_t wl_promis_start(void)
     return err;
 }
 
-static void wl_promis_stop(void)
+static esp_err_t wl_promis_stop(void)
 {
     /* Detach the callback but keep promiscuous mode on: wifi_ctrl_init() needs
      * it enabled as a precondition for esp_wifi_80211_tx() (deauth/spam). */
-    esp_wifi_set_promiscuous_rx_cb(NULL);
+    return esp_wifi_set_promiscuous_rx_cb(NULL);
+}
+
+static void wl_table_release(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    wl_entry_t *table = s_tbl;
+    s_tbl = NULL;
+    portEXIT_CRITICAL(&s_mux);
+    heap_caps_free(table);
 }
 
 /* ── hop + report task ───────────────────────────────────────────────────── */
@@ -443,7 +457,7 @@ static void wlscan_task(void *arg)
     s_5g_ok        = true;
 
     portENTER_CRITICAL(&s_mux);
-    memset(s_tbl, 0, sizeof(s_tbl));
+    memset(s_tbl, 0, WLSCAN_MAX_APS * sizeof(*s_tbl));
     portEXIT_CRITICAL(&s_mux);
 
     memset((void *)&s_air, 0, sizeof(s_air));
@@ -499,14 +513,21 @@ static void wlscan_task(void *arg)
         }
     }
 
-cleanup:
-    wl_promis_stop();
+cleanup: {
+    esp_err_t detach_err = wl_promis_stop();
+    if (detach_err == ESP_OK) {
+        wl_table_release();
+    } else {
+        io_log("wlscan: failed to detach Wi-Fi callback (%s); keeping scan table\r\n",
+               esp_err_to_name(detach_err));
+    }
     esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
     s_running = false;
     s_task = NULL;
     io_log("wlscan: STOPPED cycles=%" PRIu32 " unique=%" PRIu32 "\r\n",
            s_cycle_count, s_total_unique);
     vTaskDelete(NULL);
+}
 }
 
 /* ── public API ──────────────────────────────────────────────────────────── */
@@ -557,6 +578,22 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
         io_log("wlscan: busy, try again\r\n");
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_tbl) {
+        esp_err_t detach_err = wl_promis_stop();
+        if (detach_err != ESP_OK) {
+            io_log("wlscan: previous Wi-Fi callback still active (%s)\r\n",
+                   esp_err_to_name(detach_err));
+            return ESP_ERR_INVALID_STATE;
+        }
+        wl_table_release();
+    }
+
+    s_tbl = heap_caps_calloc(WLSCAN_MAX_APS, sizeof(*s_tbl),
+                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_tbl) {
+        io_log("wlscan: internal AP table allocation failed\r\n");
+        return ESP_ERR_NO_MEM;
+    }
 
     if (duration_sec > 3600) duration_sec = 3600;
 
@@ -569,6 +606,8 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
     if (ok != pdPASS) {
         s_running = false;
         s_task = NULL;
+        heap_caps_free(s_tbl);
+        s_tbl = NULL;
         /* Terminal line so the app clears its optimistic running state. */
         io_log("wlscan: STOPPED cycles=0 unique=0\r\n");
         return ESP_ERR_NO_MEM;

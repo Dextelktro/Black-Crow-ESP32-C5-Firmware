@@ -38,6 +38,8 @@
 #include "evil_portal.h"
 #include "led.h"
 #include "ir.h"
+#include "subghz.h"
+#include "subghz_store.h"
 #include "storage_fs.h"
 #include "esp_flasher.h"
 #include "esp_upload.h"
@@ -121,6 +123,20 @@ static const char *HELP =
     "  ir ls | info <name> | rm <name> saved signal library\r\n"
     "  ir emulate <name> [count] | ir emulate stop   replay a saved signal\r\n"
     "  ir status                       IR module status\r\n"
+    "  subghz status                   CC1101 Sub-GHz status + live RSSI\r\n"
+    "  subghz freq <hz>                set Sub-GHz frequency (300/433/868/915 bands)\r\n"
+    "  subghz preset <ook270|ook650|2fsk238|2fsk476>   modulation preset\r\n"
+    "  subghz analyzer [stop]          sweep bands, report strongest frequency\r\n"
+    "  subghz spectrum band <1-6> [bins]   focused waterfall (315/390/415/433/868/915)\r\n"
+    "  subghz spectrum [center] [span] [bins] | bands | stop   RSSI waterfall sweep\r\n"
+    "  subghz readraw [rssi <dbm>|stats] | stop   capture raw OOK (RSSI-squelched)\r\n"
+    "  subghz read | stop   decode OOK: Princeton/Linear/CAME/NiceFlo/Holtek/GateTX/Doitrand/Phoenix_V2/Clemsa; 2FSK: Ansonic\r\n"
+    "  subghz brute <CAME|NiceFlo|Linear> <bits<=20> [reps] | resume | stop   code-space sweep\r\n"
+    "  subghz storage <littlefs|sd|show>   choose where .sub files are saved\r\n"
+    "  subghz save <name> | ls | info <name> | rm <name>   .sub library (RAW or Key)\r\n"
+    "  subghz tx [repeats]             transmit the last capture (OOK)\r\n"
+    "  subghz emulate <name> [repeats] replay a saved .sub\r\n"
+    "  subghz stop                     stop any Sub-GHz sweep/capture/tx\r\n"
     "  fs ls | info | rm <path>        browse/delete LittleFS files/folders\r\n"
     "  fs mkdir <path> | mv <old> <new> create folder or rename entry\r\n"
     "  sd status | ls | mount | unmount | format\r\n"
@@ -643,13 +659,19 @@ static void cmd_espflash(int argc, char *argv[])
     io_log("espflash: ERROR err=%s\r\n", esp_err_to_name(err));
 }
 
-
 static void cmd_cc1101(int argc, char *argv[])
 {
     if (argc < 2 || strcasecmp(argv[1], "status") == 0) {
         io_log("cc1101: STATUS present=%u sleeping=%u\r\n",
                cc1101_is_present() ? 1U : 0U,
                cc1101_is_sleeping() ? 1U : 0U);
+        return;
+    }
+    /* The Sub-GHz sweep worker owns the CC1101 (and s_sleeping) while running;
+     * a manual sleep/wake from the CLI task here would interleave SPI sequences
+     * and desync the driver's power state. Refuse until the sweep stops. */
+    if (subghz_module_ready() && subghz_is_busy()) {
+        io_log("cc1101: busy (subghz sweep active; run `subghz stop` first)\r\n");
         return;
     }
     esp_err_t err;
@@ -663,6 +685,12 @@ static void cmd_cc1101(int argc, char *argv[])
     }
     io_log("cc1101: %s %s\r\n", argv[1],
            err == ESP_OK ? "ok" : esp_err_to_name(err));
+}
+
+static void subghz_ls_cb(const char *name, size_t size, void *ctx)
+{
+    (void)ctx;
+    io_log("subghz: LS name=%s bytes=%u\r\n", name, (unsigned)size);
 }
 
 static void run_line(char *line)
@@ -1572,6 +1600,188 @@ static void run_line(char *line)
         }
         if (strcasecmp(argv[1], "status") == 0) { ir_status(); return; }
         io_log("ir: unknown subcommand `%s`\r\n", argv[1]);
+        return;
+    }
+    if (strcasecmp(cmd, "subghz") == 0 || strcasecmp(cmd, "sg") == 0) {
+        if (!subghz_module_ready()) {
+            io_log("subghz: module not available (no cc1101)\r\n");
+            return;
+        }
+        if (argc < 2) {
+            io_log("usage: subghz <status|freq <hz>|preset <ook270|ook650|2fsk238|2fsk476>"
+                   "|analyzer [stop]|spectrum [center span bins]|stop>\r\n");
+            return;
+        }
+        if (strcasecmp(argv[1], "status") == 0) {
+            subghz_status();
+            return;
+        }
+        if (strcasecmp(argv[1], "freq") == 0) {
+            if (argc < 3) { io_log("usage: subghz freq <hz>\r\n"); return; }
+            uint32_t hz = (uint32_t)strtoul(argv[2], NULL, 10);
+            subghz_set_frequency(hz);
+            return;
+        }
+        if (strcasecmp(argv[1], "preset") == 0 || strcasecmp(argv[1], "mod") == 0) {
+            if (argc < 3) {
+                io_log("usage: subghz preset <ook270|ook650|2fsk238|2fsk476>\r\n");
+                return;
+            }
+            subghz_set_preset(argv[2]);
+            return;
+        }
+        if (strcasecmp(argv[1], "analyzer") == 0) {
+            if (argc >= 3 && strcasecmp(argv[2], "stop") == 0) {
+                subghz_analyzer_stop();
+            } else {
+                subghz_analyzer_start();
+            }
+            return;
+        }
+        if (strcasecmp(argv[1], "spectrum") == 0) {
+            if (argc >= 3 && strcasecmp(argv[2], "stop") == 0) {
+                subghz_spectrum_stop();
+                return;
+            }
+            if (argc >= 3 && strcasecmp(argv[2], "bands") == 0) {
+                subghz_spectrum_list_bands();
+                return;
+            }
+            if (argc >= 3 && strcasecmp(argv[2], "band") == 0) {
+                if (argc < 4) {
+                    io_log("usage: subghz spectrum band <1-6> [bins]\r\n");
+                    return;
+                }
+                subghz_spectrum_start_band(atoi(argv[3]),
+                                           (argc >= 5) ? atoi(argv[4]) : 0);
+                return;
+            }
+            uint32_t center = (argc >= 3) ? (uint32_t)strtoul(argv[2], NULL, 10) : 0;
+            uint32_t span = (argc >= 4) ? (uint32_t)strtoul(argv[3], NULL, 10) : 0;
+            int bins = (argc >= 5) ? atoi(argv[4]) : 0;
+            subghz_spectrum_start(center, span, bins);
+            return;
+        }
+        if (strcasecmp(argv[1], "readraw") == 0) {
+            if (argc >= 3 && strcasecmp(argv[2], "stop") == 0) {
+                subghz_readraw_stop();
+                return;
+            }
+            if (argc >= 3 && strcasecmp(argv[2], "rssi") == 0) {
+                if (argc < 4) { io_log("usage: subghz readraw rssi <dbm>\r\n"); return; }
+                subghz_set_rssi_threshold(atoi(argv[3]));
+                return;
+            }
+            if (argc >= 3 && strcasecmp(argv[2], "stats") == 0) {
+                subghz_readraw_stats();
+                return;
+            }
+            subghz_readraw_start();
+            return;
+        }
+        if (strcasecmp(argv[1], "read") == 0) {
+            if (argc >= 3 && strcasecmp(argv[2], "stop") == 0) {
+                subghz_read_stop();
+            } else {
+                subghz_read_start();
+            }
+            return;
+        }
+        if (strcasecmp(argv[1], "brute") == 0) {
+            if (argc >= 3 && strcasecmp(argv[2], "stop") == 0) {
+                subghz_brute_stop();
+                return;
+            }
+            if (argc >= 3 && strcasecmp(argv[2], "resume") == 0) {
+                subghz_brute_resume();
+                return;
+            }
+            if (argc < 4) {
+                io_log("usage: subghz brute <CAME|NiceFlo|Linear> <bits<=20> [repeats] "
+                       "| resume | stop\r\n");
+                return;
+            }
+            subghz_brute_start(argv[2], atoi(argv[3]),
+                               (argc >= 5) ? atoi(argv[4]) : 0);
+            return;
+        }
+        if (strcasecmp(argv[1], "storage") == 0) {
+            if (argc < 3 || strcasecmp(argv[2], "show") == 0) {
+                io_log("subghz: STORAGE target=%s available=%d\r\n",
+                       subghz_store_target_name(subghz_store_get_target()),
+                       subghz_store_target_available() ? 1 : 0);
+                return;
+            }
+            subghz_store_target_t t = SUBGHZ_STORE_UNSET;
+            if (strcasecmp(argv[2], "littlefs") == 0 ||
+                strcasecmp(argv[2], "lfs") == 0) {
+                t = SUBGHZ_STORE_LITTLEFS;
+            } else if (strcasecmp(argv[2], "sd") == 0) {
+                t = SUBGHZ_STORE_SD;
+            } else {
+                io_log("usage: subghz storage <littlefs|sd|show>\r\n");
+                return;
+            }
+            if (subghz_store_set_target(t) == ESP_OK) {
+                io_log("subghz: STORAGE target=%s\r\n",
+                       subghz_store_target_name(t));
+            } else {
+                io_log("subghz: storage set failed\r\n");
+            }
+            return;
+        }
+        if (strcasecmp(argv[1], "save") == 0) {
+            if (argc < 3) { io_log("usage: subghz save <name>\r\n"); return; }
+            subghz_save(argv[2]);
+            return;
+        }
+        if (strcasecmp(argv[1], "ls") == 0) {
+            esp_err_t e = subghz_store_list(subghz_ls_cb, NULL);
+            if (e == ESP_ERR_INVALID_STATE) {
+                io_log("subghz: ERR no-storage-target\r\n");
+            } else if (e == ESP_ERR_NOT_FOUND) {
+                io_log("subghz: ERR sd-absent\r\n");
+            } else {
+                io_log("subghz: LS DONE\r\n");
+            }
+            return;
+        }
+        if (strcasecmp(argv[1], "info") == 0) {
+            if (argc < 3) { io_log("usage: subghz info <name>\r\n"); return; }
+            subghz_info(argv[2]);
+            return;
+        }
+        if (strcasecmp(argv[1], "rm") == 0) {
+            if (argc < 3) { io_log("usage: subghz rm <name>\r\n"); return; }
+            esp_err_t e = subghz_store_delete(argv[2]);
+            if (e == ESP_ERR_INVALID_STATE) {
+                io_log("subghz: ERR no-storage-target\r\n");
+            } else if (e == ESP_ERR_NOT_FOUND) {
+                io_log("subghz: rm not found\r\n");
+            } else if (e != ESP_OK) {
+                io_log("subghz: rm failed\r\n");
+            } else {
+                io_log("subghz: RM %s\r\n", argv[2]);
+            }
+            return;
+        }
+        if (strcasecmp(argv[1], "tx") == 0) {
+            subghz_tx_last((argc >= 3) ? atoi(argv[2]) : 0);
+            return;
+        }
+        if (strcasecmp(argv[1], "emulate") == 0) {
+            if (argc < 3) {
+                io_log("usage: subghz emulate <name> [repeats]\r\n");
+                return;
+            }
+            subghz_emulate(argv[2], (argc >= 4) ? atoi(argv[3]) : 0);
+            return;
+        }
+        if (strcasecmp(argv[1], "stop") == 0) {
+            subghz_stop();
+            return;
+        }
+        io_log("subghz: unknown subcommand `%s`\r\n", argv[1]);
         return;
     }
     if (strcasecmp(cmd, "stop") == 0) {

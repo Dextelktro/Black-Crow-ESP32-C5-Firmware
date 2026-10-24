@@ -11,6 +11,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #include "host/ble_hs.h"
@@ -82,7 +83,8 @@ static int64_t   s_started_us = 0;
 static uint32_t  s_cycle_count = 0;
 static uint32_t  s_total_unique = 0;
 
-static blewar_entry_t s_tbl[BLEWAR_MAX_DEVICES];
+/* Keep the latest scan table available to save_findmy after the scan stops. */
+static blewar_entry_t *s_tbl;
 
 static const char *TAG = "ble_wardrive";
 
@@ -521,8 +523,18 @@ static void reporter_task(void *arg)
 
 esp_err_t ble_wardrive_init(void)
 {
-    s_lock = xSemaphoreCreateMutex();
+    if (!s_lock) s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return ESP_ERR_NO_MEM;
+    if (!s_tbl) {
+        s_tbl = heap_caps_calloc(BLEWAR_MAX_DEVICES, sizeof(*s_tbl),
+                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_tbl) {
+            ESP_LOGE(TAG, "BLE wardrive result PSRAM allocation failed");
+            vSemaphoreDelete(s_lock);
+            s_lock = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+    }
     s_running = false;
     s_stop_requested = false;
     return ESP_OK;
@@ -530,7 +542,7 @@ esp_err_t ble_wardrive_init(void)
 
 esp_err_t ble_wardrive_start(bool active, uint32_t duration_sec)
 {
-    if (!s_lock) return ESP_ERR_INVALID_STATE;
+    if (!s_lock || !s_tbl) return ESP_ERR_INVALID_STATE;
     if (s_running || s_task != NULL) {
         io_log("blewar: already running\r\n");
         return ESP_ERR_INVALID_STATE;
@@ -550,7 +562,7 @@ esp_err_t ble_wardrive_start(bool active, uint32_t duration_sec)
     }
 
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(200)) == pdTRUE) {
-        memset(s_tbl, 0, sizeof(s_tbl));
+        memset(s_tbl, 0, BLEWAR_MAX_DEVICES * sizeof(*s_tbl));
         xSemaphoreGive(s_lock);
     }
     s_active         = active;
@@ -620,7 +632,8 @@ uint32_t ble_wardrive_cycle_count(void)  { return s_cycle_count; }
 
 esp_err_t ble_wardrive_save_findmy(const char *address)
 {
-    if (!s_lock || !address || strlen(address) != 17)
+    if (!s_lock || !s_tbl) return ESP_ERR_INVALID_STATE;
+    if (!address || strlen(address) != 17)
         return ESP_ERR_INVALID_ARG;
 
     blewar_entry_t entry;

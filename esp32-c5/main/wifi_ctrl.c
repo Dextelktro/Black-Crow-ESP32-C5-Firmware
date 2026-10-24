@@ -12,6 +12,7 @@
 #include "esp_netif_ip_addr.h"
 #include "esp_wifi.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 #include "io.h"
@@ -177,7 +178,8 @@ static int wifi_ctrl_scan_internal(void)
     }
     io_log("scan: start (2.4 GHz)\r\n");
 
-    target_ap_t *aps = calloc(TARGETS_MAX_APS, sizeof(target_ap_t));
+    target_ap_t *aps = heap_caps_calloc(TARGETS_MAX_APS, sizeof(*aps),
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!aps) {
         io_log("scan: failed (out of memory)\r\n");
         xSemaphoreGive(s_scan_mutex);
@@ -189,7 +191,7 @@ static int wifi_ctrl_scan_internal(void)
     if (band_err != ESP_OK) {
         ESP_LOGE(TAG, "set_band_mode(2G_ONLY) failed: %d", band_err);
         io_log("scan: failed (cannot select 2.4 GHz band)\r\n");
-        free(aps);
+        heap_caps_free(aps);
         xSemaphoreGive(s_scan_mutex);
         return -1;
     }
@@ -202,12 +204,12 @@ static int wifi_ctrl_scan_internal(void)
         }
         if (n24 == -2) {
             clear_scan_targets();
-            free(aps);
+            heap_caps_free(aps);
             xSemaphoreGive(s_scan_mutex);
             return -2;
         }
         io_log("scan: failed (2.4 GHz scan)\r\n");
-        free(aps);
+        heap_caps_free(aps);
         xSemaphoreGive(s_scan_mutex);
         return -1;
     }
@@ -221,7 +223,7 @@ static int wifi_ctrl_scan_internal(void)
                      band_err);
         }
         clear_scan_targets();
-        free(aps);
+        heap_caps_free(aps);
         xSemaphoreGive(s_scan_mutex);
         return -2;
     }
@@ -234,26 +236,18 @@ static int wifi_ctrl_scan_internal(void)
             io_log("scan: 5 GHz unavailable\r\n");
         } else {
             int remaining = TARGETS_MAX_APS - total;
-            target_ap_t *aps5 = calloc(remaining, sizeof(target_ap_t));
-            if (aps5) {
-                int n5 = do_scan_and_collect(aps5, remaining);
-                if (n5 > 0) {
-                    memcpy(&aps[total], aps5, n5 * sizeof(target_ap_t));
-                    total += n5;
-                } else if (n5 == -2) {
-                    free(aps5);
-                    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-                    clear_scan_targets();
-                    free(aps);
-                    xSemaphoreGive(s_scan_mutex);
-                    return -2;
-                } else if (n5 < 0) {
-                    io_log("scan: 5 GHz scan failed (BLE active?)\r\n");
-                }
-                free(aps5);
-            } else {
-                ESP_LOGW(TAG, "5 GHz scan buffer allocation failed");
-                io_log("scan: 5 GHz skipped (out of memory)\r\n");
+            int n5 = do_scan_and_collect(&aps[total], remaining);
+            if (n5 == -2) {
+                esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+                clear_scan_targets();
+                heap_caps_free(aps);
+                xSemaphoreGive(s_scan_mutex);
+                return -2;
+            }
+            if (n5 > 0) {
+                total += n5;
+            } else if (n5 < 0) {
+                io_log("scan: 5 GHz scan failed (BLE active?)\r\n");
             }
         }
     }
@@ -262,14 +256,14 @@ static int wifi_ctrl_scan_internal(void)
     if (band_err != ESP_OK) {
         ESP_LOGE(TAG, "set_band_mode(AUTO) after scan failed: %d", band_err);
         io_log("scan: failed (cannot restore automatic band selection)\r\n");
-        free(aps);
+        heap_caps_free(aps);
         xSemaphoreGive(s_scan_mutex);
         return -1;
     }
 
     targets_set_aps(aps, total);
     targets_clear_selection();
-    free(aps);
+    heap_caps_free(aps);
 
     io_log("scan: %d APs\r\n", total);
     xSemaphoreGive(s_scan_mutex);
@@ -391,7 +385,8 @@ int wifi_ctrl_scan_fast(bool band_5g, uint32_t min_ms, uint32_t max_ms,
 {
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
 
-    target_ap_t *aps = calloc(TARGETS_MAX_APS, sizeof(target_ap_t));
+    target_ap_t *aps = heap_caps_calloc(TARGETS_MAX_APS, sizeof(*aps),
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!aps) {
         xSemaphoreGive(s_scan_mutex);
         return -1;
@@ -425,7 +420,7 @@ int wifi_ctrl_scan_fast(bool band_5g, uint32_t min_ms, uint32_t max_ms,
 done:
     esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
     if (ret == 0) targets_set_aps(aps, total);
-    free(aps);
+    heap_caps_free(aps);
     xSemaphoreGive(s_scan_mutex);
     return (ret == 0) ? total : -1;
 }
