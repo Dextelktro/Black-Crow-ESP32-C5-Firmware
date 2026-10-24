@@ -50,6 +50,11 @@ typedef struct {
 const char *ir_proto_name(ir_proto_t p);
 ir_proto_t  ir_proto_from_name(const char *s);
 
+/* Minimum number of frames a protocol should transmit for a receiver to accept
+ * it (Flipper's per-variant repeat_count): Sony/SIRC needs 3, the rest 1.
+ * The universal sweep uses this so repeat-dependent devices stay reliable. */
+int ir_proto_min_repeats(ir_proto_t p);
+
 /* Encode a parsed message into a microsecond timing list.
  * Returns the number of timings written (0 on failure / unsupported).
  * On success *carrier_hz_out and *duty_out hold the protocol carrier. */

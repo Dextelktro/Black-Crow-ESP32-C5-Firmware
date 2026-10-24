@@ -1,5 +1,6 @@
 #include "ir.h"
 
+#include <inttypes.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -9,14 +10,32 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "io.h"
 #include "ir_rmt.h"
 #include "ir_proto.h"
 #include "ir_db.h"
 #include "ir_store.h"
 
-#define IR_UNIV_GAP_MS   85
+/* Universal-sweep cadence. The gap is applied once per code and is kept short
+ * so the whole "blast every brand" sweep stays fast (Flipper paces ~one signal
+ * per 100 ms tick with the send overlapping the period). */
+#define IR_UNIV_GAP_MS   30
 #define IR_EMIT_GAP_MS   130
+/* A raw array may bundle several captured frames separated by long idle gaps
+ * (20–116 ms, some up to 1.5 s). For the universal sweep we transmit only the
+ * first clean frame: a space longer than this ends the frame. 25 ms clears
+ * normal within-frame spaces (incl. AC two-part commands, whose split is
+ * typically < 20 ms) while catching inter-frame / dead-air gaps. */
+#define IR_UNIV_FRAME_GAP_US 25000
+/* Minimum timings a truncated frame must keep (header + a few bits) before we
+ * trust the cut; otherwise send the array whole. */
+#define IR_UNIV_MIN_FRAME    8
+/* Clean-frame repeats per RAW code (Flipper sends raw once), and the short,
+ * controlled silence inserted between any repeated frames — parsed Sony uses
+ * 3 frames (see ir_proto_min_repeats). Tune these for reliability vs speed. */
+#define IR_UNIV_RAW_REPEATS  1
+#define IR_UNIV_REPEAT_GAP_US 20000
 #define IR_SPEC_BINS     48
 #define IR_CAPTURE_HISTORY_MAX 40
 
@@ -31,7 +50,8 @@ static bool s_ready = false;
 
 /* ── Last captured signal (for `ir save`) ───────────────────── */
 static SemaphoreHandle_t s_last_mux = NULL;
-static uint16_t  s_last[IR_RAW_MAX_TIMINGS];
+static SemaphoreHandle_t s_scratch_mux = NULL;
+static uint16_t *s_last;
 static size_t    s_last_count = 0;
 static ir_message_t s_last_msg;
 static uint32_t  s_last_carrier = 38000;
@@ -62,7 +82,7 @@ static int  s_emit_count;
 
 /* Scratch timing buffer for the saved-library reads (used only from the
  * single-threaded CLI command task — list and info never overlap). */
-static uint16_t s_scratch[IR_RAW_MAX_TIMINGS];
+static uint16_t *s_scratch;
 
 bool ir_module_ready(void) { return s_ready; }
 bool ir_rx_running(void)   { return s_rx_on; }
@@ -225,7 +245,11 @@ esp_err_t ir_rx_start(void)
 {
     if (!s_ready) { io_log("ir: not ready\r\n"); return ESP_ERR_INVALID_STATE; }
     if (s_tx_busy) { io_log("ir: busy (tx)\r\n"); return ESP_ERR_INVALID_STATE; }
-    if (s_rx_on) return ESP_OK;
+    if (s_rx_on && ir_rmt_rx_active()) return ESP_OK;
+    if (s_rx_on) {
+        s_rx_on = false;
+        io_log("ir: rx worker stopped; attempting recovery\r\n");
+    }
     esp_err_t err = ir_rmt_rx_start(rx_burst, NULL);
     if (err != ESP_OK) { io_log("ir: rx start failed\r\n"); return err; }
     s_rx_on = true;
@@ -250,6 +274,21 @@ void ir_spectrum_set(bool on)
 {
     s_spectrum_on = on;
     io_log(on ? "ir_spec: ON\r\n" : "ir_spec: OFF\r\n");
+}
+
+/* Length of the first clean frame in a raw timing array: the number of
+ * leading timings up to (not including) the first inter-frame gap — a space
+ * (odd index) longer than IR_UNIV_FRAME_GAP_US. Returns the full length when
+ * no such gap exists (a genuine single-frame signal, e.g. most AC codes) or
+ * when the cut would be implausibly short. The result ends on a mark. */
+static size_t ir_raw_first_frame(const uint32_t *d, size_t n)
+{
+    for (size_t i = 1; i < n; i += 2) {   /* spaces live at odd indices */
+        if (d[i] > IR_UNIV_FRAME_GAP_US) {
+            return (i >= IR_UNIV_MIN_FRAME) ? i : n;
+        }
+    }
+    return n;
 }
 
 /* ------------------------------------------------------------------
@@ -308,19 +347,25 @@ static void tx_task(void *arg)
                ir_cat_name(s_univ_cat), s_univ_btn, total);
         int sent = 0;
         int failed = 0;
+        size_t db_cursor = 0;
         for (int i = 0; i < total && !s_tx_stop; i++) {
-            const ir_db_entry_t *e = ir_db_get(s_univ_cat, s_univ_btn, i);
-            if (!e) {
-                failed++;
-                io_log("ir: TX_FAIL i=%d/%d brand=\"?\" err=%d\r\n",
-                       i + 1, total, (int)ESP_ERR_INVALID_STATE);
-                continue;
-            }
+            const ir_db_entry_t *e = ir_db_next(s_univ_cat, s_univ_btn, &db_cursor);
+            if (!e) break;   /* ir_db_next yields exactly `total` matches */
             esp_err_t err;
             if (e->proto == IR_PROTO_RAW && e->raw && e->raw_len) {
-                err = ir_rmt_send_raw32(e->raw, e->raw_len,
-                                        e->carrier ? e->carrier : 38000,
-                                        e->duty > 0.0f ? e->duty : 0.33f);
+                /* Send only the first clean frame (drops captured inter-frame
+                 * dead air), repeated a controlled number of times. AC is
+                 * exempt: its codes are whole-state commands that may span two
+                 * parts split by a >25 ms gap, so truncating could cut a
+                 * command in half — send AC raw signals whole. */
+                size_t flen = (s_univ_cat == IR_CAT_AC)
+                                  ? e->raw_len
+                                  : ir_raw_first_frame(e->raw, e->raw_len);
+                err = ir_rmt_send_raw32_repeat(
+                    e->raw, flen,
+                    e->carrier ? e->carrier : 38000,
+                    e->duty > 0.0f ? e->duty : 0.33f,
+                    IR_UNIV_RAW_REPEATS, IR_UNIV_REPEAT_GAP_US);
             } else {
                 ir_message_t m = {
                     .proto = e->proto, .address = e->address,
@@ -333,22 +378,25 @@ static void tx_task(void *arg)
                                      &carrier, &duty);
                 err = n == 0
                     ? ESP_ERR_NOT_SUPPORTED
-                    : ir_rmt_send(buf, n, carrier, duty);
+                    : ir_rmt_send_repeat(buf, n, carrier, duty,
+                                         ir_proto_min_repeats(e->proto),
+                                         IR_UNIV_REPEAT_GAP_US);
             }
+            int64_t tx_time_us = esp_timer_get_time();
             if (err == ESP_OK) {
                 sent++;
-                io_log("ir: TX i=%d/%d brand=\"%s\" proto=%s\r\n",
-                       i + 1, total, e->brand ? e->brand : "?",
+                io_log("ir: TX i=%d/%d t_us=%" PRId64 " brand=\"%s\" proto=%s\r\n",
+                       i + 1, total, tx_time_us, e->brand ? e->brand : "?",
                        ir_proto_name(e->proto));
             } else {
                 failed++;
-                io_log("ir: TX_FAIL i=%d/%d brand=\"%s\" err=%d\r\n",
-                       i + 1, total, e->brand ? e->brand : "?",
+                io_log("ir: TX_FAIL i=%d/%d t_us=%" PRId64 " brand=\"%s\" err=%d\r\n",
+                       i + 1, total, tx_time_us, e->brand ? e->brand : "?",
                        (int)err);
             }
-            for (int k = 0; k < IR_UNIV_GAP_MS / 10 && !s_tx_stop; k++) {
-                vTaskDelay(pdMS_TO_TICKS(10));
-            }
+            /* Short fixed gap between codes; the loop top checks s_tx_stop so
+             * worst-case stop latency is one gap. */
+            if (!s_tx_stop) vTaskDelay(pdMS_TO_TICKS(IR_UNIV_GAP_MS));
         }
         taskENTER_CRITICAL(&s_tx_state_mux);
         s_tx_finishing = true;
@@ -493,7 +541,14 @@ esp_err_t ir_save_capture(const char *name, uint32_t capture_id)
      * RX hardware (app-visible state unchanged), write, then resume. Avoids
      * writing flash while the receiver is capturing. */
     bool was_rx = s_rx_on;
-    if (was_rx) ir_rmt_rx_stop();
+    if (was_rx) {
+        esp_err_t stop_err = ir_rmt_rx_stop();
+        if (stop_err != ESP_OK) {
+            io_log("ir: cannot pause rx for save (%d)\r\n", (int)stop_err);
+            return stop_err;
+        }
+        s_rx_on = false;
+    }
 
     esp_err_t err = ESP_ERR_NOT_FOUND;
     if (s_last_mux && xSemaphoreTake(s_last_mux, pdMS_TO_TICKS(200)) == pdTRUE) {
@@ -512,14 +567,28 @@ esp_err_t ir_save_capture(const char *name, uint32_t capture_id)
                                 s_last_duty, &s_last_msg);
         }
         xSemaphoreGive(s_last_mux);
-    } else if (!s_last_mux) {
+    } else if (s_last_mux) {
+        err = ESP_ERR_TIMEOUT;
+    } else {
         err = ir_store_save(name, s_last, s_last_count, s_last_carrier,
                             s_last_duty, &s_last_msg);
     }
 
-    if (was_rx && s_rx_on) ir_rmt_rx_start(rx_burst, NULL);
+    if (was_rx) {
+        esp_err_t resume_err = ir_rmt_rx_start(rx_burst, NULL);
+        if (resume_err == ESP_OK) {
+            s_rx_on = true;
+        } else {
+            io_log("ir: rx resume after save failed (%d)\r\n", (int)resume_err);
+            if (err == ESP_OK) err = resume_err;
+        }
+    }
     if (err == ESP_ERR_NOT_FOUND) {
         io_log("ir: capture expired id=%" PRIu32 "\r\n", capture_id);
+        return err;
+    }
+    if (err == ESP_ERR_TIMEOUT) {
+        io_log("ir: capture save timed out\r\n");
         return err;
     }
     if (err != ESP_OK) io_log("ir: save failed (%d)\r\n", err);
@@ -572,24 +641,45 @@ esp_err_t ir_saved_list(void)
 {
     int c = ir_store_count();
     io_log("ir_saved: LS count=%d\r\n", c);
-    ir_store_list(list_cb, NULL);
+    /* Always emit the "LS end" terminator the app keys on, even on an early
+     * exit, or the saved-list load never completes in the UI. */
+    if (!s_scratch_mux || !s_scratch) {
+        io_log("ir_saved: LS end\r\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_scratch_mux, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        io_log("ir_saved: LS end\r\n");
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = ir_store_list(list_cb, NULL);
+    xSemaphoreGive(s_scratch_mux);
     io_log("ir_saved: LS end\r\n");
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t ir_saved_info(const char *name)
 {
+    if (!s_scratch_mux || !s_scratch) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_scratch_mux, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        io_log("ir: info busy name=%s\r\n", name);
+        return ESP_ERR_TIMEOUT;
+    }
     size_t n = 0;
     ir_message_t m;
     uint32_t carrier = 38000;
     float duty = 0.33f;
     esp_err_t err = ir_store_load(name, s_scratch, IR_RAW_MAX_TIMINGS, &n,
                                   &carrier, &duty, &m);
-    if (err != ESP_OK) { io_log("ir: info not found name=%s\r\n", name); return err; }
+    if (err != ESP_OK) {
+        xSemaphoreGive(s_scratch_mux);
+        io_log("ir: info not found name=%s\r\n", name);
+        return err;
+    }
     io_log("ir_saved: INFO name=%s proto=%s addr=0x%lX cmd=0x%lX freq=%lu n=%u\r\n",
            name, ir_proto_name(m.proto), (unsigned long)m.address,
            (unsigned long)m.command, (unsigned long)carrier, (unsigned)n);
     emit_raw(s_scratch, n);
+    xSemaphoreGive(s_scratch_mux);
     return ESP_OK;
 }
 
@@ -616,16 +706,66 @@ esp_err_t ir_module_init(void)
 {
     if (s_ready) return ESP_OK;
     memset(&s_last_msg, 0, sizeof(s_last_msg));
-    s_last_mux = xSemaphoreCreateMutex();
-    s_capture_history = heap_caps_calloc(
-        IR_CAPTURE_HISTORY_MAX, sizeof(*s_capture_history),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_last_mux) s_last_mux = xSemaphoreCreateMutex();
+    if (!s_last_mux) return ESP_ERR_NO_MEM;
+    if (!s_scratch_mux) s_scratch_mux = xSemaphoreCreateMutex();
+    if (!s_scratch_mux) {
+        vSemaphoreDelete(s_last_mux);
+        s_last_mux = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    /* Prefer PSRAM (keeps internal RAM free) but fall back to internal heap so
+     * IR still comes up when PSRAM is exhausted — only a true double-failure
+     * aborts init. */
+    if (!s_last) {
+        s_last = heap_caps_calloc(IR_RAW_MAX_TIMINGS, sizeof(*s_last),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_last) {
+            s_last = heap_caps_calloc(IR_RAW_MAX_TIMINGS, sizeof(*s_last),
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        }
+    }
+    if (!s_scratch) {
+        s_scratch = heap_caps_calloc(IR_RAW_MAX_TIMINGS, sizeof(*s_scratch),
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_scratch) {
+            s_scratch = heap_caps_calloc(IR_RAW_MAX_TIMINGS, sizeof(*s_scratch),
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        }
+    }
+    if (!s_last || !s_scratch) {
+        ESP_LOGE("ir", "timing buffer allocation failed (PSRAM + internal)");
+        heap_caps_free(s_last);
+        s_last = NULL;
+        heap_caps_free(s_scratch);
+        s_scratch = NULL;
+        vSemaphoreDelete(s_scratch_mux);
+        s_scratch_mux = NULL;
+        vSemaphoreDelete(s_last_mux);
+        s_last_mux = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    if (!s_capture_history) {
+        s_capture_history = heap_caps_calloc(
+            IR_CAPTURE_HISTORY_MAX, sizeof(*s_capture_history),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
     if (!s_capture_history) {
         ESP_LOGW("ir", "capture history allocation failed; only latest capture can be saved");
     }
 
     esp_err_t err = ir_rmt_init(IR_TX_GPIO, IR_RX_GPIO);
     if (err != ESP_OK) {
+        heap_caps_free(s_capture_history);
+        s_capture_history = NULL;
+        heap_caps_free(s_scratch);
+        s_scratch = NULL;
+        heap_caps_free(s_last);
+        s_last = NULL;
+        vSemaphoreDelete(s_scratch_mux);
+        s_scratch_mux = NULL;
+        vSemaphoreDelete(s_last_mux);
+        s_last_mux = NULL;
         io_log("ir: rmt init failed (%d)\r\n", err);
         return err;
     }

@@ -16,7 +16,7 @@ static SemaphoreHandle_t s_mutex;
 static target_ap_t *s_aps;
 static int          s_ap_count = 0;
 
-static target_sta_t s_stas[TARGETS_MAX_STAS];
+static target_sta_t *s_stas;
 static int          s_sta_count = 0;
 
 /* Multi-AP selection list */
@@ -38,12 +38,20 @@ static attack_mode_t s_mode = ATTACK_MODE_BROADCAST;
 
 void targets_init(void)
 {
-    s_mutex = xSemaphoreCreateMutex();
+    if (!s_mutex) s_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_mutex ? ESP_OK : ESP_ERR_NO_MEM);
 
-    s_aps = heap_caps_calloc(TARGETS_MAX_APS, sizeof(*s_aps),
-                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_aps) {
+        s_aps = heap_caps_calloc(TARGETS_MAX_APS, sizeof(*s_aps),
+                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
     ESP_ERROR_CHECK(s_aps ? ESP_OK : ESP_ERR_NO_MEM);
+
+    if (!s_stas) {
+        s_stas = heap_caps_calloc(TARGETS_MAX_STAS, sizeof(*s_stas),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    ESP_ERROR_CHECK(s_stas ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
 void targets_set_aps(const target_ap_t *aps, uint16_t n)

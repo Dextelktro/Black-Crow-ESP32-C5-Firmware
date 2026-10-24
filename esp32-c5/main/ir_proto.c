@@ -67,6 +67,14 @@ ir_proto_t ir_proto_from_name(const char *s)
     return IR_PROTO_UNKNOWN;
 }
 
+int ir_proto_min_repeats(ir_proto_t p)
+{
+    /* Sony/SIRC receivers require 3 identical frames (Flipper's
+     * INFRARED_SIRC_REPEAT_COUNT_MIN); every other protocol here is reliable
+     * with a single frame. */
+    return (p == IR_PROTO_SONY) ? 3 : 1;
+}
+
 /* ============================================================
  * Timing-list builder
  * ============================================================ */

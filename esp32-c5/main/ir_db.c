@@ -64,16 +64,18 @@ int ir_db_count(ir_cat_t cat, const char *button)
     return n;
 }
 
-const ir_db_entry_t *ir_db_get(ir_cat_t cat, const char *button, int idx)
+const ir_db_entry_t *ir_db_next(ir_cat_t cat, const char *button, size_t *cursor)
 {
-    if (!button || idx < 0) return NULL;
-    int n = 0;
-    for (size_t i = 0; i < K_DB_N; i++) {
+    if (!button || !cursor || *cursor >= K_DB_N) return NULL;
+
+    for (size_t i = *cursor; i < K_DB_N; i++) {
         if (k_db[i].cat != cat || strcasecmp(k_db[i].button, button) != 0) {
             continue;
         }
-        if (n == idx) return &k_db[i];
-        n++;
+        *cursor = i + 1;
+        return &k_db[i];
     }
+
+    *cursor = K_DB_N;
     return NULL;
 }

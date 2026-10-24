@@ -37,6 +37,18 @@ esp_err_t ir_rmt_send(const uint16_t *durations, size_t count,
 esp_err_t ir_rmt_send_raw32(const uint32_t *durations, size_t count,
                             uint32_t carrier_hz, float duty);
 
+/* Transmit a frame `repeats` times (>=1) in one RMT transaction, inserting
+ * `gap_us` of silence between consecutive frames (never after the last). Used
+ * by the universal sweep to send a short, controlled repeat (like Flipper's
+ * per-protocol minimum) instead of replaying captured inter-frame dead air.
+ * repeats<=1 / gap_us==0 behave exactly like the single-shot variants. */
+esp_err_t ir_rmt_send_repeat(const uint16_t *durations, size_t count,
+                             uint32_t carrier_hz, float duty,
+                             int repeats, uint32_t gap_us);
+esp_err_t ir_rmt_send_raw32_repeat(const uint32_t *durations, size_t count,
+                                   uint32_t carrier_hz, float duty,
+                                   int repeats, uint32_t gap_us);
+
 /* Start/stop continuous reception. Each decoded burst is handed to `cb`
  * from an internal task (NOT an ISR — safe to log / allocate). */
 esp_err_t ir_rmt_rx_start(ir_rx_cb_t cb, void *ctx);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "ir_proto.h"
@@ -43,5 +44,5 @@ ir_cat_t    ir_cat_from_name(const char *s);
 /* Number of codes stored for a category+button. */
 int  ir_db_count(ir_cat_t cat, const char *button);
 
-/* Fetch the idx-th code for a category+button, or NULL if out of range. */
-const ir_db_entry_t *ir_db_get(ir_cat_t cat, const char *button, int idx);
+/* Return the next matching entry while advancing cursor through the database. */
+const ir_db_entry_t *ir_db_next(ir_cat_t cat, const char *button, size_t *cursor);
