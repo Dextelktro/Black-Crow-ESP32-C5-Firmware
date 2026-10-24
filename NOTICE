@@ -1,7 +1,9 @@
 5g Deauther Toolkit
 Copyright 2026 Max Brito and contributors
 
-This product includes software derived from the
-"ESP32-C5 Dual-Band Deauther" project by AnvilBrain
-  https://github.com/AnvilBrain/esp32-c5-dualband-deauther
+This product includes software that comes from the project
+"ESP32-C5 Dual-Band Deauther" by AnvilBrain
+https://github.com/AnvilBrain/esp32-c5-dualband-deauther
+After that, the project was further developed by x1watt
+https://github.com/x1watt/esp32-c5-deauth
 The original work is licensed under the MIT License.

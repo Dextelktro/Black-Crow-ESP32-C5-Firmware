@@ -288,7 +288,10 @@ Wire a 38 kHz IR front-end to 3.3 V logic:
   including ones with no built-in code.
 
 The partition table reserves 6 MB for the app and 10 MB for IR storage; see
-`partitions.csv`. The `storage` partition formats itself on first boot.
+`partitions.csv`. On first boot, an entirely erased `storage` partition is
+formatted automatically. If mounting fails and the partition contains any
+programmed data, the firmware reports the error and preserves the contents
+instead of formatting them.
 
 ### Whitelist / blacklist semantics
 

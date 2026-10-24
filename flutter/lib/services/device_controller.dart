@@ -12,6 +12,7 @@ import '../models/ble_spam_type.dart';
 import '../models/ir_models.dart';
 import '../models/portal_models.dart';
 import '../models/sta_entry.dart';
+import '../models/subghz_models.dart';
 import 'nus_client.dart';
 
 /// Satu frame deauth yang di-report oleh firmware.
@@ -331,6 +332,12 @@ class DeviceController extends ChangeNotifier {
       irSpectrumOn = false;
       irUnivRunning = false;
       irEmulateRunning = false;
+      subghzReadRunning = false;
+      subghzReadRawRunning = false;
+      subghzAnalyzerRunning = false;
+      subghzSpectrumRunning = false;
+      subghzTxRunning = false;
+      subghzBruteRunning = false;
       _notifyTimer?.cancel();
       _notifyTimer = null;
       _notifyListeners();
@@ -674,6 +681,69 @@ class DeviceController extends ChangeNotifier {
   int irFsUsed = 0;
   int irFsTotal = 0;
 
+  // ── Sub-GHz (CC1101, 300–928 MHz OOK/2-FSK) ─────────────────
+  bool subghzModuleKnown = false;
+  bool subghzPresent = false;
+  SubghzStatus? subghzStatus;
+  // Current radio config (echoed by FREQ/PRESET/STATUS/RSSI_THR).
+  int subghzFreqHz = 433920000;
+  String subghzPresetId = 'ook650';
+  int subghzRssiThreshold = -80;
+  SubghzStorageTarget subghzStorageTarget = SubghzStorageTarget.unset;
+  bool subghzStorageAvailable = false;
+  // Mode flags (START/STOPPED telemetry for read/readraw; optimistic for the
+  // sweep/tx/brute modes, which have no generic START/STOPPED line).
+  bool subghzReadRunning = false;
+  bool subghzReadRawRunning = false;
+  bool subghzAnalyzerRunning = false;
+  bool subghzSpectrumRunning = false;
+  bool subghzTxRunning = false;
+  bool subghzBruteRunning = false;
+  // Read (decode) results, most-recent first.
+  final List<SubghzDecoded> subghzDecoded = [];
+  static const int _subghzDecodedMax = 40;
+  // Read RAW bursts, most-recent first; the live one accumulates RAWBIN chunks.
+  final List<SubghzRawBurst> subghzBursts = [];
+  static const int _subghzBurstsMax = 20;
+  SubghzRawBurst? _subghzLiveBurst;
+  bool subghzHasCapture = false; // something captured this session (tx/save ok)
+  // Frequency analyzer.
+  int subghzAnalyzerPeakHz = 0;
+  int subghzAnalyzerRssi = -128;
+  final List<int> subghzAnalyzerHistory = []; // peak rssi, oldest → newest
+  static const int _subghzAnalyzerHistoryLen = 96;
+  // Spectrum.
+  SubghzSpecFrame? subghzSpecFrame;
+  int subghzSpecRev = 0;
+  final List<List<double>> subghzSpecRows = []; // oldest → newest, 0..1
+  static const int _subghzSpecRowsMax = 160;
+  // In-progress spectrum frame assembled from the chunked SPEC/SPECBIN lines.
+  int _sgSpecSeq = -1;
+  int _sgSpecN = 0, _sgSpecCenter = 0, _sgSpecSpan = 0, _sgSpecStep = 0;
+  int _sgSpecPeak = -128, _sgSpecPeakFq = 0;
+  final List<int> _sgSpecBins = [];
+  List<SubghzBand> subghzBands = const [];
+  final List<SubghzBand> _subghzBandsTmp = [];
+  // TX / brute progress.
+  int subghzTxSent = 0;
+  int subghzBruteIdx = 0;
+  int subghzBruteTotal = 0;
+  String subghzBruteProto = '';
+  // Saved library.
+  List<SubghzSavedFile> subghzSaved = const [];
+  final List<SubghzSavedFile> _subghzSavedTmp = [];
+  bool subghzListing = false;
+  SubghzFileInfo? subghzLastInfo;
+  String? subghzNotice; // transient one-line result (SAVED/RM/ERR/NOCAP/WARN)
+
+  bool get subghzBusy =>
+      subghzReadRunning ||
+      subghzReadRawRunning ||
+      subghzAnalyzerRunning ||
+      subghzSpectrumRunning ||
+      subghzTxRunning ||
+      subghzBruteRunning;
+
   int get cpuUsagePercent => sysCpuUsagePercent ?? 0;
 
   /// Short label for the active operation (Home dashboard).
@@ -697,6 +767,12 @@ class DeviceController extends ChangeNotifier {
     if (irUnivRunning) return 'IR SEND';
     if (irEmulateRunning) return 'IR EMULATE';
     if (irRxRunning) return 'IR RX';
+    if (subghzBruteRunning) return 'SUBGHZ BRUTE';
+    if (subghzTxRunning) return 'SUBGHZ TX';
+    if (subghzSpectrumRunning) return 'SUBGHZ SPECTRUM';
+    if (subghzAnalyzerRunning) return 'SUBGHZ ANALYZER';
+    if (subghzReadRawRunning) return 'SUBGHZ RAW';
+    if (subghzReadRunning) return 'SUBGHZ READ';
     if (scanning) return 'SCANNING';
     return 'IDLE';
   }
@@ -1222,6 +1298,436 @@ class DeviceController extends ChangeNotifier {
     nrfMjTargets = List.unmodifiable(list);
   }
 
+  // ── Sub-GHz telemetry regexes ─────────────────────────────
+  static final _reSgStatus = RegExp(
+    r'^subghz: STATUS present=(\d+) ver=0x([0-9A-Fa-f]+) part=0x([0-9A-Fa-f]+) fq=(\d+) preset=(\S+) rssi=(-?\d+) marc=0x([0-9A-Fa-f]+)',
+  );
+  static final _reSgFreq = RegExp(r'^subghz: FREQ (\d+)');
+  static final _reSgPreset = RegExp(r'^subghz: PRESET (\S+)');
+  static final _reSgRssiThr = RegExp(r'^subghz: RSSI_THR (-?\d+)');
+  static final _reSgStorage = RegExp(
+    r'^subghz: STORAGE target=(\S+)(?: available=(\d+))?',
+  );
+  static final _reSgReadKnown = RegExp(
+    r'^subghz: READ proto=(\S+) bits=(\d+) key=0x([0-9A-Fa-f]+) te=(\d+) fq=(\d+) rssi=(-?\d+)',
+  );
+  static final _reSgReadUnknown = RegExp(
+    r'^subghz: READ proto=unknown n=(\d+) fq=(\d+) rssi=(-?\d+)',
+  );
+  static final _reSgRaw = RegExp(
+    r'^subghz: RAW seq=(\d+) n=(\d+) fq=(\d+) preset=(\S+) rssi=(-?\d+) trunc=(\d+)',
+  );
+  static final _reSgRawBin = RegExp(
+    r'^subghz: RAWBIN seq=(\d+) off=(\d+) v=(.*)$',
+  );
+  static final _reSgSpec = RegExp(
+    r'^subghz: SPEC seq=(\d+) center=(\d+) span=(\d+) step=(\d+) n=(\d+) peak=(-?\d+) peakfq=(\d+)',
+  );
+  static final _reSgSpecBin = RegExp(
+    r'^subghz: SPECBIN seq=(\d+) off=(\d+) v=(.*)$',
+  );
+  static final _reSgAnalyzer = RegExp(
+    r'^subghz: ANALYZER peakfq=(\d+) rssi=(-?\d+)',
+  );
+  static final _reSgSpecBand = RegExp(
+    r'^subghz: SPECBAND idx=(\d+) label=(\S+) lo=(\d+) hi=(\d+)',
+  );
+  static final _reSgTxStart = RegExp(
+    r'^subghz: TX START fq=(\d+) n=(\d+) repeats=(\d+)',
+  );
+  static final _reSgTxDone = RegExp(
+    r'^subghz: TX DONE sent=(\d+) maxlate_us=(\d+)',
+  );
+  static final _reSgBruteStart = RegExp(
+    r'^subghz: BRUTE START proto=(\S+) bits=(\d+) from=(\d+) to=(\d+)',
+  );
+  static final _reSgBruteIdx = RegExp(r'^subghz: BRUTE idx=(\d+) of=(\d+)');
+  static final _reSgBruteDone = RegExp(r'^subghz: BRUTE DONE last=(\d+)');
+  static final _reSgBruteStopped = RegExp(r'^subghz: BRUTE STOPPED idx=(\d+)');
+  static final _reSgModeStart = RegExp(
+    r'^subghz: (READ|READRAW) START fq=(\d+) preset=(\S+) thr=(-?\d+)',
+  );
+  static final _reSgModeStopped = RegExp(r'^subghz: (READ|READRAW) STOPPED');
+  static final _reSgLs = RegExp(r'^subghz: LS name=(\S+) bytes=(\d+)');
+  static final _reSgRm = RegExp(r'^subghz: RM (\S+)');
+  static final _reSgSavedRaw = RegExp(
+    r'^subghz: SAVED name=(\S+) n=(\d+) target=(\S+)',
+  );
+  static final _reSgSavedKey = RegExp(
+    r'^subghz: SAVED name=(\S+) proto=(\S+) bit=(\d+) target=(\S+)',
+  );
+  static final _reSgInfoKey = RegExp(
+    r'^subghz: INFO name=(\S+) kind=key proto=(\S+) bits=(\d+) key=0x([0-9A-Fa-f]+) te=(\d+) fq=(\d+) preset=(\S+)',
+  );
+  static final _reSgInfoRaw = RegExp(
+    r'^subghz: INFO name=(\S+) kind=raw n=(\d+) fq=(\d+) preset=(\S+)',
+  );
+
+  /// Group a 16-hex firmware key down to its meaningful [bits] and format it as
+  /// space-separated hex pairs. Uses BigInt so a top-bit-set 64-bit key is exact.
+  static String _sgFormatKey(String hex16, int bits) {
+    final full = hex16.length > 16
+        ? hex16.substring(hex16.length - 16)
+        : hex16.padLeft(16, '0');
+    var v = BigInt.tryParse(full, radix: 16) ?? BigInt.zero;
+    final width = bits <= 0 ? 64 : (bits > 64 ? 64 : bits);
+    if (width < 64) v &= (BigInt.one << width) - BigInt.one;
+    final nibbles = ((width + 3) ~/ 4).clamp(1, 16);
+    final s = v.toRadixString(16).toUpperCase().padLeft(nibbles, '0');
+    final b = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i).isEven) b.write(' ');
+      b.write(s[i]);
+    }
+    return b.toString();
+  }
+
+  static List<int> _sgParseCsv(String csv) {
+    final out = <int>[];
+    for (final tok in csv.split(',')) {
+      final t = tok.trim();
+      if (t.isEmpty) continue;
+      final v = int.tryParse(t);
+      if (v != null) out.add(v);
+    }
+    return out;
+  }
+
+  void _sgCommitSpecFrame() {
+    if (_sgSpecSeq < 0 || _sgSpecBins.isEmpty) return;
+    final bins = List<int>.unmodifiable(_sgSpecBins);
+    subghzSpecFrame = SubghzSpecFrame(
+      seq: _sgSpecSeq,
+      centerHz: _sgSpecCenter,
+      spanHz: _sgSpecSpan,
+      stepHz: _sgSpecStep,
+      peakDbm: _sgSpecPeak,
+      peakFreqHz: _sgSpecPeakFq,
+      bins: bins,
+    );
+    // Normalize dBm to 0..1 for the shared waterfall (floor -110, 90 dB span).
+    final row = <double>[
+      for (final v in bins) ((v + 110) / 90.0).clamp(0.0, 1.0),
+    ];
+    subghzSpecRows.add(row);
+    while (subghzSpecRows.length > _subghzSpecRowsMax) {
+      subghzSpecRows.removeAt(0);
+    }
+    subghzSpecRev++;
+    _sgSpecSeq = -1;
+    _sgSpecBins.clear();
+  }
+
+  void _parseSubghz(String line) {
+    final status = _reSgStatus.firstMatch(line);
+    if (status != null) {
+      subghzModuleKnown = true;
+      subghzPresent = status.group(1) == '1';
+      subghzFreqHz = int.tryParse(status.group(4)!) ?? subghzFreqHz;
+      subghzPresetId = status.group(5)!;
+      subghzStatus = SubghzStatus(
+        present: subghzPresent,
+        version: int.tryParse(status.group(2)!, radix: 16) ?? 0,
+        part: int.tryParse(status.group(3)!, radix: 16) ?? 0,
+        freqHz: subghzFreqHz,
+        preset: subghzPresetId,
+        rssi: int.tryParse(status.group(6)!) ?? -128,
+        at: DateTime.now(),
+      );
+      return;
+    }
+    final freq = _reSgFreq.firstMatch(line);
+    if (freq != null) {
+      subghzFreqHz = int.tryParse(freq.group(1)!) ?? subghzFreqHz;
+      return;
+    }
+    final preset = _reSgPreset.firstMatch(line);
+    if (preset != null) {
+      subghzPresetId = preset.group(1)!;
+      return;
+    }
+    final thr = _reSgRssiThr.firstMatch(line);
+    if (thr != null) {
+      subghzRssiThreshold = int.tryParse(thr.group(1)!) ?? subghzRssiThreshold;
+      return;
+    }
+    final storage = _reSgStorage.firstMatch(line);
+    if (storage != null) {
+      subghzStorageTarget = SubghzStorageTargetX.parse(storage.group(1)!);
+      if (storage.group(2) != null) {
+        subghzStorageAvailable = storage.group(2) == '1';
+      }
+      return;
+    }
+    final readKnown = _reSgReadKnown.firstMatch(line);
+    if (readKnown != null && readKnown.group(1) != 'unknown') {
+      final bits = int.tryParse(readKnown.group(2)!) ?? 0;
+      subghzDecoded.insert(
+        0,
+        SubghzDecoded(
+          proto: readKnown.group(1)!,
+          bits: bits,
+          keyHex: _sgFormatKey(readKnown.group(3)!, bits),
+          te: int.tryParse(readKnown.group(4)!) ?? 0,
+          freqHz: int.tryParse(readKnown.group(5)!) ?? subghzFreqHz,
+          rssi: int.tryParse(readKnown.group(6)!) ?? -128,
+          at: DateTime.now(),
+        ),
+      );
+      while (subghzDecoded.length > _subghzDecodedMax) {
+        subghzDecoded.removeLast();
+      }
+      subghzHasCapture = true;
+      return;
+    }
+    final readUnknown = _reSgReadUnknown.firstMatch(line);
+    if (readUnknown != null) {
+      subghzDecoded.insert(
+        0,
+        SubghzDecoded(
+          proto: 'unknown',
+          bits: 0,
+          keyHex: '',
+          te: 0,
+          freqHz: int.tryParse(readUnknown.group(2)!) ?? subghzFreqHz,
+          rssi: int.tryParse(readUnknown.group(3)!) ?? -128,
+          at: DateTime.now(),
+        ),
+      );
+      while (subghzDecoded.length > _subghzDecodedMax) {
+        subghzDecoded.removeLast();
+      }
+      subghzHasCapture = true;
+      return;
+    }
+    final raw = _reSgRaw.firstMatch(line);
+    if (raw != null) {
+      final burst = SubghzRawBurst(
+        seq: int.tryParse(raw.group(1)!) ?? 0,
+        count: int.tryParse(raw.group(2)!) ?? 0,
+        freqHz: int.tryParse(raw.group(3)!) ?? subghzFreqHz,
+        preset: raw.group(4)!,
+        rssi: int.tryParse(raw.group(5)!) ?? -128,
+        truncated: raw.group(6) == '1',
+        at: DateTime.now(),
+      );
+      _subghzLiveBurst = burst;
+      subghzBursts.insert(0, burst);
+      while (subghzBursts.length > _subghzBurstsMax) {
+        subghzBursts.removeLast();
+      }
+      subghzHasCapture = true;
+      return;
+    }
+    final rawBin = _reSgRawBin.firstMatch(line);
+    if (rawBin != null) {
+      final seq = int.tryParse(rawBin.group(1)!) ?? -1;
+      final burst = _subghzLiveBurst;
+      if (burst != null && burst.seq == seq) {
+        burst.durations.addAll(_sgParseCsv(rawBin.group(3)!));
+      }
+      return;
+    }
+    final spec = _reSgSpec.firstMatch(line);
+    if (spec != null) {
+      _sgCommitSpecFrame(); // flush any previous in-progress frame
+      _sgSpecSeq = int.tryParse(spec.group(1)!) ?? 0;
+      _sgSpecCenter = int.tryParse(spec.group(2)!) ?? 0;
+      _sgSpecSpan = int.tryParse(spec.group(3)!) ?? 0;
+      _sgSpecStep = int.tryParse(spec.group(4)!) ?? 0;
+      _sgSpecN = int.tryParse(spec.group(5)!) ?? 0;
+      _sgSpecPeak = int.tryParse(spec.group(6)!) ?? -128;
+      _sgSpecPeakFq = int.tryParse(spec.group(7)!) ?? 0;
+      _sgSpecBins.clear();
+      return;
+    }
+    final specBin = _reSgSpecBin.firstMatch(line);
+    if (specBin != null) {
+      final seq = int.tryParse(specBin.group(1)!) ?? -1;
+      if (seq == _sgSpecSeq) {
+        _sgSpecBins.addAll(_sgParseCsv(specBin.group(3)!));
+        if (_sgSpecN > 0 && _sgSpecBins.length >= _sgSpecN) {
+          _sgCommitSpecFrame();
+        }
+      }
+      return;
+    }
+    final analyzer = _reSgAnalyzer.firstMatch(line);
+    if (analyzer != null) {
+      subghzAnalyzerPeakHz = int.tryParse(analyzer.group(1)!) ?? 0;
+      subghzAnalyzerRssi = int.tryParse(analyzer.group(2)!) ?? -128;
+      subghzAnalyzerHistory.add(subghzAnalyzerRssi);
+      while (subghzAnalyzerHistory.length > _subghzAnalyzerHistoryLen) {
+        subghzAnalyzerHistory.removeAt(0);
+      }
+      return;
+    }
+    if (line == 'subghz: SPECBANDS n=${_subghzBandsTmp.length}' ||
+        line.startsWith('subghz: SPECBANDS ')) {
+      _subghzBandsTmp.clear();
+      return;
+    }
+    final band = _reSgSpecBand.firstMatch(line);
+    if (band != null) {
+      _subghzBandsTmp.add(
+        SubghzBand(
+          index: int.tryParse(band.group(1)!) ?? _subghzBandsTmp.length + 1,
+          label: band.group(2)!,
+          loHz: int.tryParse(band.group(3)!) ?? 0,
+          hiHz: int.tryParse(band.group(4)!) ?? 0,
+        ),
+      );
+      subghzBands = List.unmodifiable(_subghzBandsTmp);
+      return;
+    }
+    final modeStart = _reSgModeStart.firstMatch(line);
+    if (modeStart != null) {
+      final mode = modeStart.group(1);
+      subghzReadRunning = mode == 'READ';
+      subghzReadRawRunning = mode == 'READRAW';
+      subghzFreqHz = int.tryParse(modeStart.group(2)!) ?? subghzFreqHz;
+      subghzPresetId = modeStart.group(3)!;
+      subghzRssiThreshold =
+          int.tryParse(modeStart.group(4)!) ?? subghzRssiThreshold;
+      return;
+    }
+    final modeStopped = _reSgModeStopped.firstMatch(line);
+    if (modeStopped != null) {
+      subghzReadRunning = false;
+      subghzReadRawRunning = false;
+      return;
+    }
+    final txStart = _reSgTxStart.firstMatch(line);
+    if (txStart != null) {
+      subghzTxRunning = true;
+      subghzTxSent = 0;
+      return;
+    }
+    final txDone = _reSgTxDone.firstMatch(line);
+    if (txDone != null) {
+      subghzTxRunning = false;
+      subghzTxSent = int.tryParse(txDone.group(1)!) ?? 0;
+      subghzNotice = 'Transmitted ${txDone.group(1)} frame(s)';
+      return;
+    }
+    final bruteStart = _reSgBruteStart.firstMatch(line);
+    if (bruteStart != null) {
+      subghzBruteRunning = true;
+      subghzBruteProto = bruteStart.group(1)!;
+      subghzBruteIdx = int.tryParse(bruteStart.group(3)!) ?? 0;
+      subghzBruteTotal = int.tryParse(bruteStart.group(4)!) ?? 0;
+      return;
+    }
+    final bruteIdx = _reSgBruteIdx.firstMatch(line);
+    if (bruteIdx != null) {
+      subghzBruteRunning = true;
+      subghzBruteIdx = int.tryParse(bruteIdx.group(1)!) ?? subghzBruteIdx;
+      subghzBruteTotal = int.tryParse(bruteIdx.group(2)!) ?? subghzBruteTotal;
+      return;
+    }
+    final bruteDone = _reSgBruteDone.firstMatch(line);
+    if (bruteDone != null) {
+      subghzBruteRunning = false;
+      subghzBruteIdx = int.tryParse(bruteDone.group(1)!) ?? subghzBruteIdx;
+      subghzNotice = 'Brute-force complete';
+      return;
+    }
+    final bruteStopped = _reSgBruteStopped.firstMatch(line);
+    if (bruteStopped != null) {
+      subghzBruteRunning = false;
+      subghzBruteIdx = int.tryParse(bruteStopped.group(1)!) ?? subghzBruteIdx;
+      return;
+    }
+    final savedKey = _reSgSavedKey.firstMatch(line);
+    if (savedKey != null) {
+      subghzNotice = 'Saved key "${savedKey.group(1)}" (${savedKey.group(2)})';
+      unawaited(_sendCommand('subghz ls').catchError((Object _) {}));
+      return;
+    }
+    final savedRaw = _reSgSavedRaw.firstMatch(line);
+    if (savedRaw != null) {
+      subghzNotice = 'Saved "${savedRaw.group(1)}" (${savedRaw.group(2)} pulses)';
+      unawaited(_sendCommand('subghz ls').catchError((Object _) {}));
+      return;
+    }
+    final infoKey = _reSgInfoKey.firstMatch(line);
+    if (infoKey != null) {
+      final bits = int.tryParse(infoKey.group(3)!) ?? 0;
+      subghzLastInfo = SubghzFileInfo(
+        name: infoKey.group(1)!,
+        isKey: true,
+        proto: infoKey.group(2)!,
+        bits: bits,
+        keyHex: _sgFormatKey(infoKey.group(4)!, bits),
+        te: int.tryParse(infoKey.group(5)!) ?? 0,
+        freqHz: int.tryParse(infoKey.group(6)!) ?? 0,
+        preset: infoKey.group(7)!,
+      );
+      return;
+    }
+    final infoRaw = _reSgInfoRaw.firstMatch(line);
+    if (infoRaw != null) {
+      subghzLastInfo = SubghzFileInfo(
+        name: infoRaw.group(1)!,
+        isKey: false,
+        count: int.tryParse(infoRaw.group(2)!) ?? 0,
+        freqHz: int.tryParse(infoRaw.group(3)!) ?? 0,
+        preset: infoRaw.group(4)!,
+      );
+      return;
+    }
+    final ls = _reSgLs.firstMatch(line);
+    if (ls != null) {
+      if (!subghzListing) {
+        _subghzSavedTmp.clear();
+        subghzListing = true;
+      }
+      _subghzSavedTmp.add(
+        SubghzSavedFile(
+          name: ls.group(1)!,
+          bytes: int.tryParse(ls.group(2)!) ?? 0,
+        ),
+      );
+      return;
+    }
+    if (line == 'subghz: LS DONE') {
+      final list = _subghzSavedTmp.toList()
+        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      subghzSaved = List.unmodifiable(list);
+      _subghzSavedTmp.clear();
+      subghzListing = false;
+      return;
+    }
+    final rm = _reSgRm.firstMatch(line);
+    if (rm != null) {
+      subghzSaved = subghzSaved
+          .where((f) => f.name != rm.group(1))
+          .toList(growable: false);
+      subghzNotice = 'Deleted "${rm.group(1)}"';
+      return;
+    }
+    if (line == 'subghz: NOCAP') {
+      subghzNotice = 'Nothing captured yet';
+      return;
+    }
+    if (line == 'subghz: CC1101 not present') {
+      subghzModuleKnown = true;
+      subghzPresent = false;
+      return;
+    }
+    if (line.startsWith('subghz: ERR ')) {
+      subghzNotice = line.substring('subghz: ERR '.length).trim();
+      subghzTxRunning = false;
+      subghzBruteRunning = false;
+      return;
+    }
+    if (line.startsWith('subghz: WARN ')) {
+      subghzNotice = line.substring('subghz: '.length).trim();
+      return;
+    }
+    // Other diagnostics (RAWSTATS, SPECBANDS count, TX subus, …) are ignored.
+  }
+
   void _parseLine(String line) {
     if (line.isEmpty) return;
     final fsReply = _fsOperationReply;
@@ -1231,6 +1737,10 @@ class DeviceController extends ChangeNotifier {
         fsPrefix != null &&
         line.startsWith(fsPrefix)) {
       fsReply.complete(line);
+    }
+    if (line.startsWith('subghz:')) {
+      _parseSubghz(line);
+      return;
     }
     if (line.startsWith('espflash:')) {
       final reply = _espFlashReply;
@@ -4182,6 +4692,137 @@ class DeviceController extends ChangeNotifier {
     _notifyListeners();
     await _sendCommand('ir rm $name');
     await _sendCommand('ir ls');
+  }
+
+  // ── Sub-GHz (CC1101) ────────────────────────────────────────
+  Future<void> subghzRefreshStatus() => _sendCommand('subghz status');
+  Future<void> subghzRefreshStorage() => _sendCommand('subghz storage show');
+  Future<void> subghzRefreshBands() => _sendCommand('subghz spectrum bands');
+
+  Future<void> subghzRefreshSaved() async {
+    if (subghzBusy) return; // firmware refuses `ls` while a mode is active
+    await _sendCommand('subghz ls');
+  }
+
+  void _subghzClearModes() {
+    subghzReadRunning = false;
+    subghzReadRawRunning = false;
+    subghzAnalyzerRunning = false;
+    subghzSpectrumRunning = false;
+    subghzTxRunning = false;
+    subghzBruteRunning = false;
+  }
+
+  Future<void> subghzSetFrequency(int hz) => _sendCommand('subghz freq $hz');
+  Future<void> subghzSetPreset(String id) => _sendCommand('subghz preset $id');
+
+  Future<void> subghzSetRssiThreshold(int dbm) async {
+    subghzRssiThreshold = dbm;
+    _notifyListeners();
+    await _sendCommand('subghz readraw rssi $dbm');
+  }
+
+  Future<void> subghzSetStorage(SubghzStorageTarget target) async {
+    await _sendCommand('subghz storage ${target.id}');
+    await _sendCommand('subghz storage show');
+  }
+
+  Future<void> subghzStop() async {
+    _subghzClearModes();
+    _notifyListeners();
+    await _sendCommand('subghz stop');
+  }
+
+  Future<void> _subghzStartMode(String command, void Function() setFlag) async {
+    _subghzClearModes();
+    setFlag();
+    subghzNotice = null;
+    _notifyListeners();
+    try {
+      await _sendCommand(command);
+    } catch (_) {
+      _subghzClearModes();
+      _notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> subghzReadStart() =>
+      _subghzStartMode('subghz read', () => subghzReadRunning = true);
+
+  Future<void> subghzReadRawStart() =>
+      _subghzStartMode('subghz readraw', () => subghzReadRawRunning = true);
+
+  Future<void> subghzAnalyzerStart() {
+    subghzAnalyzerHistory.clear();
+    return _subghzStartMode(
+      'subghz analyzer',
+      () => subghzAnalyzerRunning = true,
+    );
+  }
+
+  Future<void> subghzSpectrumBand(int index, {int bins = 0}) {
+    subghzSpecRows.clear();
+    subghzSpecRev++;
+    final cmd = bins > 0
+        ? 'subghz spectrum band $index $bins'
+        : 'subghz spectrum band $index';
+    return _subghzStartMode(cmd, () => subghzSpectrumRunning = true);
+  }
+
+  Future<void> subghzSave(String name) => _sendCommand('subghz save $name');
+
+  Future<void> subghzInfo(String name) async {
+    subghzLastInfo = null;
+    _notifyListeners();
+    await _sendCommand('subghz info $name');
+  }
+
+  Future<void> subghzDelete(String name) async {
+    subghzSaved = subghzSaved
+        .where((f) => f.name != name)
+        .toList(growable: false);
+    _notifyListeners();
+    await _sendCommand('subghz rm $name');
+    await _sendCommand('subghz ls');
+  }
+
+  Future<void> _subghzTx(String command) async {
+    _subghzClearModes();
+    subghzTxRunning = true;
+    subghzNotice = null;
+    _notifyListeners();
+    try {
+      await _sendCommand(command);
+    } catch (_) {
+      subghzTxRunning = false;
+      _notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> subghzEmulate(String name, {int repeats = 0}) => _subghzTx(
+    repeats > 0 ? 'subghz emulate $name $repeats' : 'subghz emulate $name',
+  );
+
+  Future<void> subghzTransmitLast({int repeats = 0}) =>
+      _subghzTx(repeats > 0 ? 'subghz tx $repeats' : 'subghz tx');
+
+  Future<void> subghzBruteStart(String proto, int bits, {int repeats = 0}) =>
+      _subghzStartMode(
+        repeats > 0
+            ? 'subghz brute $proto $bits $repeats'
+            : 'subghz brute $proto $bits',
+        () => subghzBruteRunning = true,
+      );
+
+  Future<void> subghzBruteResume() =>
+      _subghzStartMode('subghz brute resume', () => subghzBruteRunning = true);
+
+  void subghzClearNotice() {
+    if (subghzNotice == null) return;
+    subghzNotice = null;
+    _notifyListeners();
   }
 
   // ── LittleFS file browser ───────────────────────────────────

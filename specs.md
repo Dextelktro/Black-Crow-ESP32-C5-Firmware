@@ -1,94 +1,90 @@
-# Seeed Studio XIAO ESP32-C5 — Specs
+# ESP32-C5-DevKitC-1 N16R8 - Specs
 
-Hardware reference board. The firmware defaults target ESP32-C5 N16R8
-(16 MB flash, 8 MB quad PSRAM); this XIAO's 8 MB flash requires matching
-flash-size and partition settings before using it.
+Hardware reference for the Espressif ESP32-C5-DevKitC-1 fitted with an
+ESP32-C5-WROOM-1-N16R8 module. The project configuration targets ESP32-C5
+with 16 MB flash and 8 MB quad SPI PSRAM.
 
-- Wiki / getting started: https://wiki.seeedstudio.com/xiao_esp32c5_getting_started/
-- Official OSHW repo (schematics, KiCad, datasheets): https://github.com/Seeed-Studio/OSHW-XIAO-Series
-- PlatformIO board definition: https://github.com/Seeed-Studio/platform-seeedboards/blob/main/boards/seeed-xiao-esp32-c5.json
+- [ESP32-C5-DevKitC-1 official user guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c5/esp32-c5-devkitc-1/user_guide.html)
+- [ESP32-C5-WROOM-1 / WROOM-1U datasheet](https://documentation.espressif.com/esp32-c5-wroom-1_wroom-1u_datasheet_en.html)
+- [ESP32-C5 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-c5_datasheet_en.pdf)
 
-## Chip & Performance
-
-| Item | Value |
-|---|---|
-| MCU | ESP32-C5 |
-| Core | RISC-V 32-bit, single-core |
-| Clock | up to 240 MHz |
-| On-chip SRAM | 384 KB |
-| ROM | 320 KB |
-| PSRAM (on module) | 8 MB |
-| Flash (on module) | 8 MB |
-
-## Wireless
-
-- **Wi-Fi 6** (802.11 a/b/g/n/ac/ax), **dual-band 2.4 GHz + 5 GHz** — first XIAO board with 5 GHz support.
-- **Bluetooth 5 (LE)** with mesh.
-- External RF antenna (IPEX/U.FL) included; antenna must be attached before powering on.
-
-## Physical
+## Chip and module
 
 | Item | Value |
 |---|---|
-| Dimensions | 21 × 17.8 mm |
-| USB | Type-C |
-| Buttons | Reset, Boot |
-| Form factor | XIAO (14-pin, single-sided components) |
+| Module | ESP32-C5-WROOM-1-N16R8 |
+| MCU | ESP32-C5, single-core 32-bit RISC-V |
+| Maximum clock | 240 MHz |
+| Flash | 16 MB, Quad SPI |
+| PSRAM | 8 MB, Quad SPI |
+| Wi-Fi | Wi-Fi 6 (802.11ax), 2.4 GHz and 5 GHz |
+| Bluetooth | Bluetooth 5 LE |
 
-## Power
+The `N16R8` module variant identifies 16 MB flash and 8 MB PSRAM. Confirm the
+module marking on the physical board if its exact variant is uncertain.
 
-- Input: USB-C 5 V (VBUS) **or** 3.7 V Li-ion battery via dedicated pads.
-- Onboard 3.3 V regulator; 3V3 pin available on header.
-- Battery charge IC: **SGM40567**.
-- Battery voltage rail switch: **TPS22916CYFPR** (enable via GPIO26, read via GPIO6).
-- Charge status LED (red): tied to VCC_3V3.
+## Board
 
-## Onboard indicators
-
-| Component | Pin / Net |
+| Item | Value |
 |---|---|
-| User LED (yellow, `LED_BUILTIN`) | GPIO27 |
-| Charge LED (red) | VCC_3V3 |
-| Boot button | GPIO28 |
-| Reset button | EN |
+| Board | ESP32-C5-DevKitC-1 |
+| Power input | 5 V via either USB Type-C port; 3.3 V via the 3V3 header |
+| USB | ESP32-C5 USB Type-C and USB-to-UART Type-C ports |
+| Onboard indicator | Addressable RGB LED on GPIO27 |
 
-## Pinout (14-pin header)
+The pin headers are named **J1** and **J3** in Espressif's v1.2 user guide.
+Pin numbers below are the header positions, not GPIO numbers.
 
-| Header | Function | GPIO | Notes |
-|---|---|---|---|
-| D0 | GPIO / ADC | GPIO1 | analog input |
-| D1 | GPIO / ADC | — | ADC capable |
-| D2 | GPIO / ADC | — | ADC capable |
-| D3 | GPIO / ADC | — | ADC capable |
-| D4 | I2C SDA | GPIO23 | default I2C |
-| D5 | I2C SCL | GPIO24 | default I2C |
-| D6 | UART TX | GPIO11 | default UART0 |
-| D7 | UART RX | GPIO12 | default UART0 |
-| D8 | SPI SCK | GPIO8 | default SPI |
-| D9 | SPI MISO | GPIO9 | default SPI |
-| D10 | SPI MOSI | GPIO10 | default SPI |
-| 5V | VBUS | — | USB 5 V in/out |
-| GND | Ground | — | |
-| 3V3 | 3.3 V rail | — | regulated output |
+## J1 header
 
-### Capability summary
+| Pin | Label | Function / GPIO | Notes |
+|---:|---|---|---|
+| 1 | 3V3 | 3.3 V power | |
+| 2 | RST | Reset | Active low |
+| 3 | 2 | GPIO2 / MTMS | Strapping pin |
+| 4 | 3 | GPIO3 / MTDI | Strapping pin |
+| 5 | 0 | GPIO0 | |
+| 6 | 1 | GPIO1 / ADC1_CH0 | |
+| 7 | 6 | GPIO6 / ADC1_CH5 | |
+| 8 | 7 | GPIO7 | Strapping pin |
+| 9 | 8 | GPIO8 | |
+| 10 | 9 | GPIO9 | |
+| 11 | 10 | GPIO10 | |
+| 12 | 26 | GPIO26 | Strapping pin |
+| 13 | 25 | GPIO25 | Strapping pin |
+| 14 | 5V | 5 V power | |
+| 15 | G | Ground | |
+| 16 | NC | Not connected | |
 
-- **GPIO:** up to 11 user-accessible, all PWM-capable.
-- **ADC:** 5 channels.
-- **I2C:** 1 (D4/D5).
-- **SPI:** 1 (D8/D9/D10).
-- **UART:** 2 (D6/D7 default; second UART remappable).
-- **JTAG:** pads on the back side (MTMS, MTDI, MTCK, MTDO).
-- **USB:** USB 2.0 Full-Speed CDC/JTAG via Type-C.
+## J3 header
 
-## Security
+| Pin | Label | Function / GPIO | Notes |
+|---:|---|---|---|
+| 1 | G | Ground | |
+| 2 | TX | U0TXD / GPIO11 | UART0 TX |
+| 3 | RX | U0RXD / GPIO12 | UART0 RX |
+| 4 | 24 | GPIO24 | |
+| 5 | 23 | GPIO23 | |
+| 6 | NC/15 | GPIO15 | Not available when using the module's SPI PSRAM |
+| 7 | 27 | GPIO27 | Onboard RGB LED; strapping pin |
+| 8 | 4 | GPIO4 / MTCK | |
+| 9 | 5 | GPIO5 / MTDO | |
+| 10 | NC | Not connected | |
+| 11 | 28 | GPIO28 | Strapping pin |
+| 12 | G | Ground | |
+| 13 | 14 | GPIO14 / USB_D+ / SDIO_DATA2 | |
+| 14 | 13 | GPIO13 / USB_D- / SDIO_DATA3 | |
+| 15 | G | Ground | |
+| 16 | NC | Not connected | |
 
-- AES-128/256, SHA family, HMAC hardware accelerators.
-- Secure Boot v2.
-- Flash encryption.
+## Pin notes
 
-## Toolchain notes
-
-- Arduino: install Seeed `xiao-esp32` board package; select **XIAO_ESP32C5**.
-- ESP-IDF: target `esp32c5` (requires ESP-IDF release with C5 support).
-- PlatformIO: board id `seeed-xiao-esp32-c5` from the seeedboards platform.
+- GPIO2 (MTMS), GPIO3 (MTDI), GPIO7, GPIO25, GPIO26, GPIO27, and GPIO28 are
+  strapping pins. Avoid external circuits that change their levels during
+  power-up or reset.
+- GPIO15 is unavailable for external use on modules with SPI PSRAM, including
+  the N16R8 variant.
+- GPIO13 and GPIO14 are also assigned to USB D- and USB D+ on the chip.
+- See Espressif's [board pin-layout diagram](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c5/_images/esp32-c5-devkitc-1-pin-layout_v1.2.png)
+  and [header reference](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c5/esp32-c5-devkitc-1/user_guide.html#hardware-reference)
+  when identifying physical header positions.

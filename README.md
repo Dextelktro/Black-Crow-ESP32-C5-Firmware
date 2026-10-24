@@ -1,41 +1,46 @@
-# 5G Deauther — Dual-Band Wi-Fi Deauthentication Toolkit
+# Black Crow Firmware
+
+This firmware is a fork of the original version of the x1watt/esp32 c5 deauth project, https://github.com/x1watt/esp32-c5-deauth, completely overhauling the original firmware. The original firmware only had features like WiFi scan, nuke, WiFi radar on nuke, 2.4GHz/5GHz WiFi attacks, and a few other features. In my first test with the original firmware, the WiFi attacks didn’t work and there were also issues with delay and freezing in the app. That’s when I tried to fix the WiFi attack problems and also address the app delay and freezing issues, completely revamp the firmware and app, and combine new features and improvements into the original components.
+
+# The primary focus of this project includes
+
+Firmware Development — Developing and refining the core firmware to enhance stability and extensibility, while enabling support for various features and additional modules.
+
+Wireless Control — Allowing the device to be fully controlled via a smartphone or desktop application, eliminating the need for an onboard TFT screen, physical buttons, or other local control interfaces.
+
+BLE Communication — Utilizing Bluetooth Low Energy (BLE) with the NimBLE stack as the primary communication channel between the device and the control application.
+
+Hardware Support — Integrating various modules—such as NRF24, CC1101, infrared (IR), and other supporting components—to expand the device's hardware experimentation capabilities.
+
+Wi-Fi and Bluetooth Experimentation — Developing and testing 2.4 GHz Wi-Fi, 5 GHz Wi-Fi, and BLE features, based on the capabilities of the hardware in use, with a focus on learning, protocol analysis, compatibility testing, and experimentation within a safe and controlled environment.
+
+# Reasons for Choosing Smartphone/Desktop-Based Control
+
+Full control via BLE (Bluetooth Low Energy) was selected to enhance device efficiency and flexibility, based on the following considerations:
+Cost Efficiency — Reduces production costs by eliminating the need for a TFT display and physical buttons.
+More Flexible UI — Enables a more complex interface that is easier to develop and user-friendly.
+Power Efficiency — Lowers power consumption by removing display components and physical control systems.
+Practicality and Accessibility — Leverages smartphones or desktop computers that are already part of the user's daily routine.
+Compact Design — Reduces the number of physical components and provides greater freedom in utilizing GPIO pins.
+
+This approach results in a more compact, efficient, and flexible device without compromising ease of control.
+
+# ESP32-C5 Multi-Radio Lab Toolkit
+
+Firmware and companion controllers for the **ESP32-C5-DevKitC-1** with an
+**ESP32-C5-WROOM-1-N16R8** module. The firmware is configured for 16 MB flash
+and 8 MB quad-SPI PSRAM.
 
 <p align="center">
-  <img src="screenshots/panel1-deauth-wifi-routers.png" alt="Flutter controller showing the scanned network list" width="380">
+  <img src="screenshots/panel1-deauth-wifi-routers.png" alt="Flutter controller device and network view" width="380">
 </p>
 
-ESP32-C5 firmware that scans 2.4 GHz and 5 GHz access points and lets a
-controller (mobile, desktop, or watch) send 802.11 deauthentication frames
-to selected targets over a Bluetooth LE link. Three controller front-ends
-are included in this repo:
-
-| Front-end | Path | Notes |
-|-----------|------|-------|
-| ESP32-C5 firmware | `esp32-c5/` | The radio. ESP-IDF project configured for ESP32-C5 N16R8 (16 MB flash, 8 MB quad PSRAM). |
-| Flutter app | `flutter/` | Android / Linux desktop. Full-featured (whitelist, blacklist, nuke, console). |
-| Garmin watch app | `garmin/` | Connect IQ app for the Fenix 7 series. Minimal: scan → list networks → deauth. |
-
-The radio and the controllers speak the Nordic UART Service (NUS) BLE
-profile with a simple line-buffered text protocol. See
-`esp32-c5/README.md` for the protocol reference.
-The ESP32-C5 advertises the NUS service UUID for phone-side BLE filtering and
-shows as `Radio C5` in the Flutter app's scan list. On Android 6–11,
-BLE scanning also requires Location permission and the Location service;
-Android 12+ uses Nearby devices permission.
-
-## Screenshots & demos
-
-| Networks panel | Nuke demo |
-|----------------|-----------|
-| <img src="screenshots/panel1-deauth-wifi-routers.png" alt="Networks tab" width="320"> | <img src="screenshots/panel2-nuke-all-routers.gif" alt="Nuke radar in action" width="320"> |
-
-The Flutter Home screen opens **Network Target & Monitoring**, **BLE Scan**,
-**Nuke**, **Deauth All**, and **BLE Spam** as separate tool screens. The
-network panel sorts scanned APs by band and signal, and lets you tick
-individual targets before pressing **Deauth**. The Nuke demo shows the radar
-view for a chosen duration.
-
----
+This is a research and education project. Some firmware modules can transmit
+radio signals or affect nearby devices. Use them only in an isolated lab, with
+equipment and frequencies you are authorized to test. Do not use this project
+to disrupt networks, collect credentials, track people, or interfere with
+devices you do not own or have explicit permission to test. You are responsible
+for complying with local laws and radio regulations.
 
 ## ⚠️  Ethical use only
 
@@ -64,186 +69,140 @@ flashing, or running it you accept that responsibility.
 
 ---
 
-## Quick flash (browser, no install)
+## Project components
 
-The fastest way to get the firmware onto an ESP32-C5: plug the board in
-over USB-C and click this link in **Chrome or Edge** (Web Serial is
-required, so Firefox/Safari won't work).
+| Component | Directory | Purpose |
+|---|---|---|
+| ESP32-C5 firmware | [`esp32-c5/`](esp32-c5/) | ESP-IDF firmware, USB-Serial-JTAG console, BLE control, and optional radio/peripheral modules |
+| Flutter controller | [`flutter/`](flutter/) | BLE controller app for Android and Linux desktop |
+| Garmin watch app | [`garmin/`](garmin/) | Connect IQ companion for selected Fenix 7 watches |
+| Unity test harness | [`unity-app/`](unity-app/) | ESP-IDF Unity test-project scaffold |
+| Hardware reference | [`specs.md`](specs.md) | Official DevKitC-1 board details and J1/J3 pinout |
+| Inspiration | [`inspirations/`](inspirations/) | Reference projects and research material |
 
-[**Flash ESP32-C5 Deauther in your browser →**](https://espressif.github.io/esp-launchpad/?flashConfigURL=https://raw.githubusercontent.com/maxbrito500/esp32-c5-deauth/flasher/config.toml)
+The Flutter app and firmware communicate over BLE using the Nordic UART
+Service (NUS). The firmware also exposes a USB-Serial-JTAG console. The BLE
+device advertises as **Radio C5**.
 
-The page is Espressif's official **ESP Launchpad** with a preset that
-points at the firmware in this repo. Hit *Connect*, pick the serial
-port for the XIAO, then *Flash* — the merged binary is written at
-offset `0x0000`, no manual address juggling. Total time: under a minute.
+## Firmware capabilities
 
-When the device is running, install the Android APK or Linux desktop
-app below to control it over BLE.
+The firmware includes:
 
----
+- Wi-Fi discovery, dual-band targeted Wi-Fi attacks, mass Wi-Fi attacks on all reachable devices and channels with 2 modes, namely SKIP mode and UNICAST dual-band mode, real-time Wi-Fi monitoring, real-time Wi-Fi radar display, Wi-Fi monitoring, evil portal, Wi-Fi sniffer, and Wi-Fi spectrum display across all supported bands.  
+- BLE device scanning, BLE spam, Apple AirTag monitoring, BLE wardriving, signal spectrum display, and passive observation tools.
+- Support for nRF24L01+ radio modules, nRF sniffer scanning, spectrum scanner, nRF24 jammer supports two modes: automatic and manual, mousejack  
+- Support for CC1101 module, signal reading, raw signal reading, emulation of saved signals, frequency analyzer, spectrum analyzer supports signal shifts from 315MHz-915MHz, supports preset OOK and FSK modulations, supports multiple protocols, and brute force  
+- Support for infrared TX and RX, receiver functions, signal decoding, signal library, and infrared remote control, universal infrared remote  
+- Support for internal storage Little FS and SD card, file/data transfer from Desktop/Phone
+-ESP Flasher UART support, allows flashing by connecting the ESP32 Board UART pins to the hardware UART pins, transferring bin files from your phone/desktop to Little FS/SD card storage.  
+-Device telemetry, including estimated internal temperature and CPU load, BLE speed, and built-in RGB status light.  
+-Experimental radio transmission and captive-portal module. Use this feature only in a safe, isolated test environment; never request or store real user credentials.  
 
-## Downloads
-
-Pre-built binaries are published on the
-[**Releases**](https://github.com/maxbrito500/esp32-c5-deauth/releases)
-page for every tagged version. No toolchain required:
-
-| File | Use it for |
-|------|-----------|
-| `esp32c5-deauther-firmware.zip` | ESP32-C5 firmware bundle. Prefer the [browser flasher above](#quick-flash-browser-no-install); the zip is for offline / `esptool` users. |
-| `deauther-android.apk` | Android phones — single APK that runs on all CPU architectures (arm64, armv7, x86_64). |
-| `deauther-linux-x64.tar.gz` | Linux desktop. Extract and run `./deauther`. |
-| `SHA256SUMS` | Checksums to verify the downloads |
-
-The Garmin watch app is not currently in the release bundle — it has to
-be built locally because Connect IQ apps are signed with a per-developer
-key (see `garmin/run-fenix7pro.sh`).
-
----
+BLE observations are not proof of device identity or anyone's location. Signal strength is not an accurate measure of distance. Treat collected data as sensitive information and only keep what’s needed for official tests.
 
 ## Hardware
 
-- **ESP32-C5 N16R8** (16 MB flash, 8 MB quad PSRAM) is the firmware's
-  default hardware target. Other ESP32-C5 boards require matching flash,
-  PSRAM, and partition settings; the on-board LED GPIO may also need
-  adjustment in `esp32-c5/main/led.c`. See `specs.md` for the XIAO reference
-  board's hardware details.
-- USB-C cable (data, not charge-only) for flashing.
-- (Optional) Garmin Fenix 7 family watch.
+### Main board
 
-## Build from source (Ubuntu 22.04 / 24.04)
+- **Board:** Espressif ESP32-C5-DevKitC-1.
+- **Module:** ESP32-C5-WROOM-1-N16R8 (16 MB flash, 8 MB quad-SPI PSRAM).
+- **Onboard RGB LED:** GPIO27.
+- **USB:** USB Type-C ports for power, serial/JTAG, and development.
 
-Tested on a clean Ubuntu install. Each component can be built
-independently — install only the toolchain you need.
+See [`specs.md`](specs.md) for the official header pin map, power notes, and
+strapping-pin cautions. Verify the module marking and board revision before
+connecting external hardware.
+
+### Optional peripherals
+
+These are the firmware's current default signal pins; they are not included
+with the DevKitC-1 board.
+
+| Peripheral | Firmware pin assignment |
+|---|---|
+| Shared SPI bus | SCK GPIO6, MISO GPIO2, MOSI GPIO7 |
+| microSD | CS GPIO1, card detect GPIO0 |
+| nRF24L01+ | CSN GPIO9, CE GPIO8; uses the shared SPI bus |
+| CC1101 | CS GPIO23, GDO0 GPIO24; uses the shared SPI bus |
+| IR interface | TX GPIO4, RX GPIO5 |
+
+The SD card and radio modules share SPI resources. The firmware initializes
+the SD interface before enabling access to the SPI radios. Check voltage
+levels, module wiring, and board pin constraints before powering a custom
+setup; GPIO2 and several other ESP32-C5 pins have boot-strapping functions.
+
+## Build and test
 
 ### ESP32-C5 firmware
 
+Use the Espressif IoT Development Framework (ESP-IDF) environment. The
+dependency lockfile in [`esp32-c5/`](esp32-c5/) records ESP-IDF **v5.5.1** and
+the project targets `esp32c5`.
+
 ```sh
-# 1. System packages required by ESP-IDF.
-sudo apt-get update
-sudo apt-get install -y \
-    git wget flex bison gperf python3 python3-venv python3-pip \
-    cmake ninja-build ccache dfu-util libusb-1.0-0 \
-    libffi-dev libssl-dev
-
-# 2. Clone ESP-IDF v5.5.1 (matches the patched libnet80211.a).
-mkdir -p ~/esp && cd ~/esp
-git clone -b v5.5.1 --recursive https://github.com/espressif/esp-idf.git
-cd esp-idf
-./install.sh esp32c5            # downloads RISC-V toolchain + tools
-
-# 3. Activate the toolchain in your current shell.
-. ~/esp/esp-idf/export.sh        # add this to ~/.bashrc to make it permanent
-
-# 4. Apply the wifi patch and build.
-cd /path/to/this/repo/esp32-c5
-cp patched_libnet/libnet80211.a "$IDF_PATH/components/esp_wifi/lib/esp32c5/"
+cd esp32-c5
 idf.py set-target esp32c5
 idf.py build
-
-# 5. Flash via USB-C JTAG (no BOOT/RESET button presses needed).
-./flash.sh
 ```
 
-The patched `libnet80211.a` makes `esp_wifi_80211_tx()` accept
-management frames with a spoofed source address — required for
-deauthentication on the C5's 5 GHz radio. The original library is kept
-as `libnet80211.a.orig` after the first patch.
+The custom partition table reserves `0x5F0000` bytes (about 5.94 MiB) for the
+factory application and `0xA00000` bytes (10 MiB) for LittleFS. The
+configuration and partition layout are for the N16R8 memory variant; do not
+assume they fit a different board or module.
 
-### Flutter — Android APK
+Building does not validate optional hardware or radio behavior. Perform
+hardware tests only in a controlled, authorized lab.
+
+### Flutter controller
+
+Install Flutter with Dart SDK **3.10 or later**, then run from `flutter/`:
 
 ```sh
-# 1. JDK 17.
-sudo apt-get install -y openjdk-17-jdk
-
-# 2. Flutter SDK (stable channel).
-git clone -b stable --depth 1 https://github.com/flutter/flutter.git ~/flutter
-echo 'export PATH="$HOME/flutter/bin:$PATH"' >> ~/.bashrc
-export PATH="$HOME/flutter/bin:$PATH"
-
-# 3. Android command-line tools — point Flutter at your Android SDK
-#    (Android Studio installs this; otherwise grab "command-line tools
-#    only" from https://developer.android.com/studio and unzip into
-#    ~/Android/Sdk/cmdline-tools/latest/, then accept licenses).
-flutter doctor --android-licenses
-flutter doctor                      # should be all green for Android
-
-# 4. Build a universal APK that runs on every CPU architecture.
-cd /path/to/this/repo/flutter
 flutter pub get
+flutter analyze
+flutter test
 flutter build apk --release
-ls build/app/outputs/flutter-apk/app-release.apk
 ```
 
-Install on a phone with `adb install` (USB debugging enabled) or by
-copying the `.apk` to the phone and tapping it.
-
-### Flutter — Linux desktop
-
-```sh
-# 1. GTK and build tools.
-sudo apt-get install -y \
-    clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
-    libsecret-1-dev libjsoncpp-dev
-
-# 2. Flutter SDK (same as above).
-flutter config --enable-linux-desktop
-
-# 3. Build and run.
-cd /path/to/this/repo/flutter
-flutter pub get
-flutter run -d linux                 # or: flutter build linux --release
-```
+The app requests Bluetooth permissions as required by Android. Older Android
+versions may also require Location permission and the Location service for BLE
+scanning. The firmware must be powered on and advertising for the controller
+to discover it.
 
 ### Garmin watch app
 
-The Garmin SDK requires a (free) developer account — see
-[`garmin/`](garmin/) for the build scripts (`run-fenix7pro.sh`,
-`sideload.sh`).
-
----
-
-## On-device LED indicator
-
-The yellow user LED on the XIAO ESP32-C5 (GPIO 27, active-low) signals
-state via blink rhythm — single-color hardware doesn't allow color
-coding:
-
-| State | Pattern |
-|-------|---------|
-| Idle (no BLE client) | one short flash every 5 seconds |
-| BLE client connected | two short flashes every 5 seconds |
-| Attack running | continuous rapid strobe (~6 Hz) |
-
-The separate red **C** LED on the board lights up only when the device
-is running on battery — that's a hardware indicator, not controlled by
-the firmware.
-
----
+The Connect IQ app targets Fenix 7, Fenix 7 Pro, and Fenix 7X Pro products.
+Building and sideloading require the Garmin Connect IQ SDK and a developer
+signing key. Device-specific helper scripts are in [`garmin/`](garmin/).
 
 ## Repository layout
 
-```
+```text
 .
-├── esp32-c5/        # ESP-IDF firmware (NimBLE + dual-band scanner + deauth engine)
-├── flutter/         # Cross-platform controller app (BLE + HTTP API)
-├── garmin/          # Connect IQ watch app (Monkey C)
-├── inspirations/    # Reference implementations from related projects
-├── specs.md         # XIAO ESP32-C5 hardware reference
-├── LICENSE          # Apache 2.0
-└── NOTICE           # Third-party attributions
+├── esp32-c5/       ESP-IDF firmware and optional radio modules
+├── flutter/        Android and Linux BLE controller
+├── garmin/         Connect IQ watch companion
+├── unity-app/      ESP-IDF Unity test-project scaffold
+├── inspirations/   Reference projects
+├── screenshots/    Controller screenshots and demos
+├── specs.md        ESP32-C5-DevKitC-1 hardware reference
+├── LICENSE         Apache License 2.0
+└── NOTICE          Third-party attribution
 ```
 
----
+## Credits and License
 
-## Credits
+The foundation of this project started from [AnvilBrain/esp32-c5-dualband-deauther](https://github.com/AnvilBrain/esp32-c5-dualband-deauther).
+This project also ports features from the Unleashed Flipper Zero Firmware (https://github.com/DarkFlippers/unleashed-firmware) such as the universal infrared remote and features like subGHz along with its protocols that were ported to work on the ESP32-C5 with ESP-IDF 5.5.1, Further development details are noted in [`NOTICE`](NOTICE).
 
-This project began as a re-architecture of
-[**AnvilBrain/esp32-c5-dualband-deauther**](https://github.com/AnvilBrain/esp32-c5-dualband-deauther),
-which proved that the ESP32-C5's 5 GHz radio could be coerced into sending
-spoofed-SA management frames. Thanks to AnvilBrain for publishing that
-work and the libnet80211.a patch that makes 5 GHz deauth possible on
-this chip. The original project is MIT-licensed.
+## Contributions
 
-This repo is licensed under **Apache 2.0** (see [`LICENSE`](LICENSE) and
-[`NOTICE`](NOTICE)).
+This project is open source. You can help develop it by sending a Pull Request (PR). If you find any bugs or issues, please report them in the Issues section. Every contribution is highly appreciated.
+
+## Support
+
+If you like this project, follow and support me on TikTok: [@idextfury](https://www.tiktok.com/@idextfury). Thanks!
+
+## License
+
+This project is distributed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for license terms and attribution.

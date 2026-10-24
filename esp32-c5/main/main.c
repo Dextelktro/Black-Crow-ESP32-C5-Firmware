@@ -12,8 +12,8 @@
 #include "ble_scanner.h"
 #include "ble_spectrum.h"
 #include "ble_wardrive.h"
-#include "radio_modules.h"
 #include "sd_storage.h"
+#include "radio_modules.h"
 #include "spi_shared_bus.h"
 #include "monitor.h"
 #include "spectrum.h"
@@ -22,6 +22,7 @@
 #include "evil_portal.h"
 #include "led.h"
 #include "ir.h"
+#include "subghz.h"
 #include "temperature_monitor.h"
 #include "sys_monitor.h"
 
@@ -81,8 +82,13 @@ void app_main(void)
     ble_spam_init();
     io_log("main: ble spam module ready\r\n");
 
-    ble_scanner_init();
-    io_log("main: ble scanner module ready\r\n");
+    esp_err_t ble_scan_err = ble_scanner_init();
+    if (ble_scan_err == ESP_OK) {
+        io_log("main: ble scanner module ready\r\n");
+    } else {
+        io_log("main: ble scanner module init failed: %s\r\n",
+               esp_err_to_name(ble_scan_err));
+    }
 
     monitor_init();
     io_log("main: monitor module ready\r\n");
@@ -93,8 +99,13 @@ void app_main(void)
     ble_spectrum_init();
     io_log("main: ble spectrum module ready\r\n");
 
-    ble_wardrive_init();
-    io_log("main: ble wardrive module ready\r\n");
+    esp_err_t ble_wardrive_err = ble_wardrive_init();
+    if (ble_wardrive_err == ESP_OK) {
+        io_log("main: ble wardrive module ready\r\n");
+    } else {
+        io_log("main: ble wardrive module init failed: %s\r\n",
+               esp_err_to_name(ble_wardrive_err));
+    }
 
     esp_err_t wlscan_err = wifi_live_scan_init();
     if (wlscan_err == ESP_OK) {
@@ -119,6 +130,12 @@ void app_main(void)
         io_log("main: ir module ready\r\n");
     } else {
         io_log("main: ir module init failed\r\n");
+    }
+
+    if (subghz_init() == ESP_OK) {
+        io_log("main: subghz module ready (cc1101)\r\n");
+    } else {
+        io_log("main: subghz module unavailable (no cc1101)\r\n");
     }
 
     led_init();

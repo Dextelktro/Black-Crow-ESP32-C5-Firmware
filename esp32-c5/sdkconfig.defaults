@@ -82,3 +82,19 @@ CONFIG_NVS_ENCRYPTION=n
 # want the RX ISR serviceable even during unrelated flash writes, add:
 #   CONFIG_RMT_RX_ISR_CACHE_SAFE=y
 # (the RX done callback is already IRAM_ATTR, so it is ready for that option).
+
+# ---------- SUB-GHZ TX (GPTimer) ----------
+# The Sub-GHz OOK transmitter toggles GDO0 from a GPTimer on_alarm callback.
+# By default that callback lives in flash (0 IRAM): it runs correctly because
+# Sub-GHz TX itself never writes flash, so the cache stays enabled. A flash
+# write from an UNRELATED task during a transmit would only DELAY an edge
+# (jitter), not crash — tolerable for OOK remotes (pulses >= ~100 us). If an
+# oscilloscope shows jitter under system load and you have IRAM headroom
+# (`idf.py size`), make TX timing cache-immune by enabling:
+#   CONFIG_GPTIMER_ISR_CACHE_SAFE=y
+#   CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
+# The on_alarm callback is already guarded (IRAM_ATTR under
+# CONFIG_GPTIMER_ISR_CACHE_SAFE), its data is in internal RAM, and its
+# gptimer_alarm_config_t is static, so it is ready for that option.
+# NOTE: ESP-IDF marks a GPTimer alarm period < 5 us as not recommended; the TX
+# backend clamps shorter pulses to 5 us and warns (`subghz: WARN tx-subus`).

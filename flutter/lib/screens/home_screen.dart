@@ -16,11 +16,13 @@ import 'device_screen.dart';
 import 'findmy_screen.dart';
 import 'evil_portal_screen.dart';
 import 'fs_browser_screen.dart';
+import 'hardware_peripheral_screen.dart';
 import 'sd_storage_screen.dart';
 import 'ir_hub_screen.dart';
 import 'led_screen.dart';
 import 'nrf24_hub_screen.dart';
 import 'spectrum_screen.dart';
+import 'subghz_hub_screen.dart';
 import 'wifi_live_scan_screen.dart';
 import 'wifi_spam_screen.dart';
 
@@ -478,6 +480,14 @@ class _HomeBodyState extends State<HomeBody> {
           onTap: () => _push(context, ctrl, const SdStorageScreen()),
         ),
         const SizedBox(height: 14),
+      _ToolRow(
+        icon: Icons.developer_board,
+        color: const Color(0xFF63F2CE),
+        title: 'Hardware Peripheral',
+        subtitle: 'Pin map ESP32-C5 · peripheral · pin kosong · boot warning',
+        onTap: () => _push(context, ctrl, const HardwarePeripheralScreen()),
+      ),
+      const SizedBox(height: 14),
         _ToolRow(
           icon: Icons.memory,
           color: const Color(0xFF2EE6C5),
@@ -672,6 +682,27 @@ class _HomeBodyState extends State<HomeBody> {
           title: 'Infrared',
           subtitle: 'Universal remote · receiver · spectrum · emulate',
           onTap: () => _push(context, ctrl, const IrHubScreen()),
+        ),
+
+        const SizedBox(height: 18),
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            'SUB-GHZ · CC1101',
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 11,
+              letterSpacing: 2,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        _ToolRow(
+          icon: Icons.settings_input_antenna,
+          color: const Color(0xFFFFB020),
+          title: 'Sub-GHz Toolkit',
+          subtitle: 'Read · Read RAW · Saved · Analyzer · Spectrum',
+          onTap: () => _push(context, ctrl, const SubghzHubScreen()),
         ),
       ],
     );

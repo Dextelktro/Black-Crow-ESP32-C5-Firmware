@@ -43,7 +43,7 @@ class Settings extends ChangeNotifier {
         throw const FormatException('darkMode must be a boolean');
       }
       _apiPort = port as int? ?? _defaultPort;
-      _apiEnabled = enabled as bool? ?? false;
+      _apiEnabled = enabled as bool? ?? true;
       _darkMode = dark as bool? ?? true;
       notifyListeners();
     } catch (error, stackTrace) {
