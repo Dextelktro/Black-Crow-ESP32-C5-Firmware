@@ -227,7 +227,7 @@ This project is open source. You can help develop it through the Discord communi
 
 ## Support
 
-If you like this project, follow and support me on TikTok: [@idextfury](https://www.tiktok.com/@idextfury). Thanks!
+If you like this project, join the Discord community and you can help follow and support me on TikTok: [@idextfury](https://www.tiktok.com/@idextfury). Thanks!
 
 ## License
 
