@@ -43,3 +43,16 @@ esp_err_t radio_modules_init(void)
 
     return s_nrf24_result != ESP_OK ? s_nrf24_result : s_cc1101_result;
 }
+
+void radio_modules_log_status(void)
+{
+    const char *nrf24_result = s_nrf24_attempted
+                                   ? esp_err_to_name(s_nrf24_result)
+                                   : "not-run";
+    const char *cc1101_result = s_cc1101_attempted
+                                    ? esp_err_to_name(s_cc1101_result)
+                                    : "not-run";
+    io_log("main: radio probe nrf24=%s cc1101=%s cc1101_present=%u\r\n",
+           nrf24_result, cc1101_result,
+           cc1101_is_present() ? 1U : 0U);
+}

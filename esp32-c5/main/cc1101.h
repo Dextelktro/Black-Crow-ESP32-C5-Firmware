@@ -25,6 +25,9 @@ esp_err_t cc1101_write_patable(const uint8_t pa[8]);
 /* ---- higher-level helpers ---- */
 esp_err_t cc1101_reset(void);
 esp_err_t cc1101_idle(void);
+/* Emergency SIDLE/SPWD for teardown only. Bypasses the radio-access gate but
+ * still owns the shared SPI bus, so it serializes behind any SD transaction. */
+esp_err_t cc1101_emergency_shutdown(void);
 esp_err_t cc1101_flush_rx(void);
 esp_err_t cc1101_flush_tx(void);
 esp_err_t cc1101_set_frequency(uint32_t hz);

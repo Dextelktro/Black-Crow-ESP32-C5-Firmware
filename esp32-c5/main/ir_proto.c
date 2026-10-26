@@ -14,6 +14,15 @@
 
 #define SAM_HDR_MARK    4500
 #define SAM_HDR_SPACE   4500
+#define SAM_BIT_MARK     550
+#define SAM_ONE_SPACE   1650
+#define SAM_ZERO_SPACE   550
+
+#define PIONEER_HDR_MARK   8500
+#define PIONEER_HDR_SPACE  4225
+#define PIONEER_BIT_MARK    500
+#define PIONEER_ONE_SPACE  1500
+#define PIONEER_ZERO_SPACE  500
 
 #define SONY_HDR_MARK   2400
 #define SONY_HDR_SPACE   600
@@ -27,7 +36,7 @@
 #define RCA_ONE_SPACE   2000
 #define RCA_ZERO_SPACE  1000
 
-#define RC5_UNIT         889   /* half-bit */
+#define RC5_UNIT         888   /* half-bit */
 #define RC6_UNIT         444
 
 /* ============================================================
@@ -69,10 +78,9 @@ ir_proto_t ir_proto_from_name(const char *s)
 
 int ir_proto_min_repeats(ir_proto_t p)
 {
-    /* Sony/SIRC receivers require 3 identical frames (Flipper's
-     * INFRARED_SIRC_REPEAT_COUNT_MIN); every other protocol here is reliable
-     * with a single frame. */
-    return (p == IR_PROTO_SONY) ? 3 : 1;
+    if (p == IR_PROTO_SONY) return 3;
+    if (p == IR_PROTO_PIONEER) return 2;
+    return 1;
 }
 
 /* ============================================================
@@ -176,6 +184,32 @@ static size_t enc_nec(const ir_message_t *m, tbuf_t *t, bool ext)
     return t->ok ? t->n : 0;
 }
 
+/* Pioneer is NEC-like, but uses its own timing and a 33rd trailing data bit. */
+static size_t enc_pioneer(const ir_message_t *m, tbuf_t *t)
+{
+    uint8_t bits[33];
+    const uint8_t address = (uint8_t)m->address;
+    const uint8_t command = (uint8_t)m->command;
+    size_t n = 0;
+
+    n += bits_lsb(bits + n, address, 8);
+    n += bits_lsb(bits + n, (uint8_t)~address, 8);
+    n += bits_lsb(bits + n, command, 8);
+    n += bits_lsb(bits + n, (uint8_t)~command, 8);
+    bits[n++] = 0;
+
+    /* Upstream Pioneer ends after the last bit's space, then emits its
+     * 26 ms silence as the inter-frame repeat gap. There is no extra
+     * trailer mark after that space. */
+    tb_push(t, PIONEER_HDR_MARK);
+    tb_push(t, PIONEER_HDR_SPACE);
+    for (size_t i = 0; i < n; i++) {
+        tb_push(t, PIONEER_BIT_MARK);
+        tb_push(t, bits[i] ? PIONEER_ONE_SPACE : PIONEER_ZERO_SPACE);
+    }
+    return t->ok ? t->n : 0;
+}
+
 /* NEC42: 13-bit address + 13-bit ~address + 8-bit command + 8-bit ~command. */
 static size_t enc_nec42(const ir_message_t *m, tbuf_t *t)
 {
@@ -203,8 +237,8 @@ static size_t enc_samsung(const ir_message_t *m, tbuf_t *t)
     n += bits_lsb(bits + n, a, 8);
     n += bits_lsb(bits + n, c, 8);
     n += bits_lsb(bits + n, nc, 8);
-    emit_pulse_distance(t, SAM_HDR_MARK, SAM_HDR_SPACE, NEC_BIT_MARK,
-                        NEC_ONE_SPACE, NEC_ZERO_SPACE, bits, n, NEC_BIT_MARK);
+    emit_pulse_distance(t, SAM_HDR_MARK, SAM_HDR_SPACE, SAM_BIT_MARK,
+                        SAM_ONE_SPACE, SAM_ZERO_SPACE, bits, n, SAM_BIT_MARK);
     return t->ok ? t->n : 0;
 }
 
@@ -249,7 +283,7 @@ static size_t enc_rc5(const ir_message_t *m, tbuf_t *t)
     size_t n = 0;
     logic[n++] = 1;                             /* S1 */
     logic[n++] = ((m->command >> 6) & 1) ? 0 : 1; /* S2 = ~cmd bit6 (RC5X) */
-    logic[n++] = 0;                             /* toggle */
+    logic[n++] = m->toggle ? 1 : 0;             /* toggle */
     n += bits_msb(logic + n, m->address & 0x1F, 5);
     n += bits_msb(logic + n, m->command & 0x3F, 6);
 
@@ -269,15 +303,20 @@ static size_t enc_rc6(const ir_message_t *m, tbuf_t *t)
 {
     uint8_t samples[200];
     size_t s = 0;
-    /* Leader: 6u mark, 2u space. */
-    for (int i = 0; i < 6; i++) samples[s++] = 1;
-    for (int i = 0; i < 2; i++) samples[s++] = 0;
+    /* Use Unleashed's measured leader values (2666/889 us), then encode
+     * the start/mode/toggle/data half-bits at 444 us. */
+    tb_push(t, 2666);
+    tb_push(t, 889);
     /* Start bit '1' = high,low. */
     samples[s++] = 1; samples[s++] = 0;
     /* Mode = 000, each '0' = low,high. */
     for (int i = 0; i < 3; i++) { samples[s++] = 0; samples[s++] = 1; }
-    /* Toggle '0' doubled = low,low,high,high. */
-    samples[s++] = 0; samples[s++] = 0; samples[s++] = 1; samples[s++] = 1;
+    /* Toggle half-bit is doubled. */
+    if (m->toggle) {
+        samples[s++] = 1; samples[s++] = 1; samples[s++] = 0; samples[s++] = 0;
+    } else {
+        samples[s++] = 0; samples[s++] = 0; samples[s++] = 1; samples[s++] = 1;
+    }
     /* 16 data bits MSB first: 8 control (address) + 8 info (command). */
     uint16_t data = (uint16_t)(((m->address & 0xFF) << 8) | (m->command & 0xFF));
     for (int i = 15; i >= 0; i--) {
@@ -338,7 +377,7 @@ size_t ir_encode(const ir_message_t *msg, uint16_t *out, size_t out_cap,
     case IR_PROTO_SAMSUNG32: n = enc_samsung(msg, &t);    break;
     case IR_PROTO_RCA:       n = enc_rca(msg, &t); carrier = 56000; break;
     case IR_PROTO_SONY:      n = enc_sony(msg, &t); carrier = 40000; break;
-    case IR_PROTO_PIONEER:   n = enc_nec(msg, &t, false); carrier = 40000; break;
+    case IR_PROTO_PIONEER:   n = enc_pioneer(msg, &t); carrier = 40000; break;
     case IR_PROTO_RC5:       n = enc_rc5(msg, &t); carrier = 36000; break;
     case IR_PROTO_RC6:       n = enc_rc6(msg, &t); carrier = 36000; break;
     case IR_PROTO_KASEIKYO:  n = enc_kaseikyo(msg, &t); carrier = 37000; break;

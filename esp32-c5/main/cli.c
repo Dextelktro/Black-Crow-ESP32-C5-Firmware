@@ -129,11 +129,12 @@ static const char *HELP =
     "  subghz analyzer [stop]          sweep bands, report strongest frequency\r\n"
     "  subghz spectrum band <1-6> [bins]   focused waterfall (315/390/415/433/868/915)\r\n"
     "  subghz spectrum [center] [span] [bins] | bands | stop   RSSI waterfall sweep\r\n"
-    "  subghz readraw [rssi <dbm>|stats] | stop   capture raw OOK (RSSI-squelched)\r\n"
+    "  subghz readraw [strict|rssi <dbm>|stats|stop]   capture raw OOK (strict requires repeated waveform)\r\n"
     "  subghz read | stop   decode OOK: Princeton/Linear/CAME/NiceFlo/Holtek/GateTX/Doitrand/Phoenix_V2/Clemsa; 2FSK: Ansonic\r\n"
     "  subghz brute <CAME|NiceFlo|Linear> <bits<=20> [reps] | resume | stop   code-space sweep\r\n"
     "  subghz storage <littlefs|sd|show>   choose where .sub files are saved\r\n"
-    "  subghz save <name> | ls | info <name> | rm <name>   .sub library (RAW or Key)\r\n"
+        "  subghz save <name>              save last read/readraw capture, even while listening\r\n"
+        "  subghz ls | info <name> | rm <name> manage the .sub library (RAW or Key)\r\n"
     "  subghz tx [repeats]             transmit the last capture (OOK)\r\n"
     "  subghz emulate <name> [repeats] replay a saved .sub\r\n"
     "  subghz stop                     stop any Sub-GHz sweep/capture/tx\r\n"
@@ -1676,7 +1677,8 @@ static void run_line(char *line)
                 subghz_readraw_stats();
                 return;
             }
-            subghz_readraw_start();
+            subghz_readraw_start(argc >= 3 &&
+                                 strcasecmp(argv[2], "strict") == 0);
             return;
         }
         if (strcasecmp(argv[1], "read") == 0) {
@@ -1778,7 +1780,11 @@ static void run_line(char *line)
             return;
         }
         if (strcasecmp(argv[1], "stop") == 0) {
-            subghz_stop();
+            esp_err_t err = subghz_stop();
+            if (err != ESP_OK) {
+                io_log("subghz: ERR stop incomplete (%s)\r\n",
+                       esp_err_to_name(err));
+            }
             return;
         }
         io_log("subghz: unknown subcommand `%s`\r\n", argv[1]);

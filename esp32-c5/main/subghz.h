@@ -37,7 +37,7 @@ esp_err_t subghz_status(void);
 
 /* ---- Stage 2: RSSI-sweep modes (one active at a time, own worker task) ---- */
 
-/* True while analyzer or spectrum is running. */
+/* True while any Sub-GHz worker mode is running. */
 bool subghz_is_busy(void);
 
 /* Frequency Analyzer: hop a fixed list across all bands, report the strongest
@@ -69,16 +69,22 @@ esp_err_t subghz_spectrum_start_band(int index, int bins);
  * telemetry so the app can populate its band picker from firmware. */
 void subghz_spectrum_list_bands(void);
 
-/* ---- Stage 3: Read RAW (async OOK edge capture + RSSI squelch) ---- */
+/* ---- Stage 3: Read RAW (async OOK edge capture + RSSI-qualified capture) ---- */
 
-/* Start/stop continuous raw capture. Captured bursts above the RSSI squelch are
- * streamed as `subghz: RAW ...` + chunked `subghz: RAWBIN ...` and kept as the
- * last capture (for save/emulate). */
-esp_err_t subghz_readraw_start(void);
+/* Start/stop continuous raw capture. Captured bursts with a recent above-
+ * threshold RSSI sample are streamed as `subghz: RAW ...` + chunked `subghz:
+ * RAWBIN ...` and kept as the last capture (for save/emulate). Strict mode
+ * accepts the first complete waveform immediately and suppresses similar
+ * duplicates; it does not require a second transmission. Default mode also
+ * preserves truncated captures for recovery. Reported `fq` is the verified
+ * receiver tune, not an independent measurement of the transmitter's carrier
+ * frequency. */
+esp_err_t subghz_readraw_start(bool strict);
 esp_err_t subghz_readraw_stop(void);
 
-/* Squelch threshold in dBm: a captured burst is emitted only if RSSI was above
- * this during the burst. Default -80. */
+/* RAW RSSI threshold in dBm: the above-threshold state is held briefly to cover
+ * RMT idle-stop/callback latency. Read mode always runs protocol validation
+ * regardless of RSSI. Default -90 dBm (Flipper Unleashed RAW default). */
 void subghz_set_rssi_threshold(int dbm);
 int  subghz_get_rssi_threshold(void);
 
@@ -88,11 +94,12 @@ int  subghz_get_rssi_threshold(void);
  * logging. */
 void subghz_readraw_stats(void);
 
-/* ---- Stage 4: save the last captured RAW burst to a .sub file ---- */
+/* ---- Stage 4: save the last capture (RAW or decoded key) to a .sub file ---- */
 
-/* Save the most recent capture to the user-selected storage target. Emits
- * `subghz: NOCAP` if nothing captured, `subghz: ERR no-storage-target` if the
- * target is unset, or `subghz: ERR sd-absent` if SD is selected but missing. */
+/* Save a snapshot of the most recent capture to the selected storage target.
+ * READ and READ_RAW may remain active while saving; other busy modes are
+ * refused. Emits NOCAP if nothing has been captured, no-storage-target if the
+ * target is unset, or sd-absent if SD is selected but missing. */
 esp_err_t subghz_save(const char *name);
 
 /* Print one stored file's kind + fields (RAW: n/freq/preset; KEY:
@@ -110,9 +117,10 @@ esp_err_t subghz_emulate(const char *name, int repeats);
 
 /* ---- Stage 6: Read (decode known protocols) ---- */
 
-/* Capture + decode: each squelched burst is run through the protocol registry;
- * a match emits `subghz: READ proto=.. bits=.. key=.. ...`, otherwise
- * `subghz: READ proto=unknown ...`. The raw burst is kept for save. */
+/* Capture + decode: each complete burst is run through the protocol registry.
+ * One protocol-valid frame is enough to emit `subghz: READ proto=..`; an
+ * undecoded complete burst is shown as `proto=unknown` only when RSSI-qualified.
+ * The raw burst is kept for save. */
 esp_err_t subghz_read_start(void);
 esp_err_t subghz_read_stop(void);
 
@@ -125,5 +133,7 @@ esp_err_t subghz_brute_start(const char *proto_name, int bits, int repeats);
 esp_err_t subghz_brute_resume(void);   /* continue from the saved index */
 esp_err_t subghz_brute_stop(void);
 
-/* Stop whichever sweep mode is active (idempotent). */
+/* Stop whichever Sub-GHz mode is active (idempotent). TX frames are aborted.
+ * Success means the worker completed radio/GPIO cleanup; a timeout means the
+ * worker may still be finishing cleanup. */
 esp_err_t subghz_stop(void);

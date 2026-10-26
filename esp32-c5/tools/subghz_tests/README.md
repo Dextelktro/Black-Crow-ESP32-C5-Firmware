@@ -14,7 +14,7 @@ Run:
     python esp32-c5/tools/subghz_tests/test_subghz_keyfile.py    # protocol Key File
     python esp32-c5/tools/subghz_tests/test_subghz_pipeline.py   # capture pipeline (RMT seg + normalize -> decode)
 
-Last result: `results.log` — 245 PASS, 0 FAIL.
+Latest host run: 288 PASS across the four scripts below, 0 FAIL.
 
 ## Capture boundary (Stage 7 Part C)
 
@@ -35,7 +35,14 @@ long headers do not truncate frame data; a 7-10 ms gap splits while a 2.7 ms
 valid pulse and a 5.999 ms low do not; many frames in one reception split (with
 distinct keys recovered in order — no loss/dup); a partial frame never decodes;
 Dooya/SMC5326 short-gap segmentation; and all 10 protocols still decode one
-frame per reception (regression).
+frame per reception (regression). It also covers the 3 us ESP32-C5 RMT
+glitch-filter boundary, decoder-only repair of isolated sub-50 us spikes,
+two-frame Read confirmation, optional strict-RAW waveform matching,
+duplicate suppression, the delayed RSSI qualification hold, and median-of-three
+RSSI sampling. The test reads the relevant firmware `#define`s so capture
+thresholds, confirmation windows, and sample counts cannot silently drift
+from the model. Analyzer checks cover the absolute RSSI floor and local
+sideband margin.
 
 ## Verified now (logic)
 
@@ -87,10 +94,22 @@ frame per reception (regression).
 - Interop with a genuine Flipper (import/export `.sub`).
 - TX pulse accuracy on GDO0 (scope/logic-analyzer), minimum reproducible pulse,
   cumulative drift over a long frame, jitter under WiFi/BLE/flash load.
-- RSSI squelch threshold vs real noise floor and partial-burst behavior. (The
-  "header gap > 10 ms stop-threshold segments frames" assumption is now proven
-  at the LOGIC level by `test_subghz_pipeline.py`; only the real on-air pulse
-  timing vs the 10 ms threshold remains hardware-pending.)
+- RSSI threshold vs real noise floor and partial-burst behavior. The hardware
+  RMT glitch floor remains 3 us: ESP-IDF 5.5.1's ESP32-C5 APB-clock filter is
+  limited to 255 ticks (about 3187 ns). A separate software repair merges only
+  isolated sub-50 us glitches for protocol decoding; the caller-owned RAW
+  waveform remains unchanged. Read reports a single complete frame as soon as
+  a supported protocol decoder accepts it, then suppresses identical reports
+  for 1.5 seconds. Complete undecoded frames are shown as Unknown only while
+  RSSI-qualified. Strict RAW emits the first complete qualifying waveform
+  immediately, rejects truncated captures, and suppresses similar duplicates
+  for 1.5 seconds; it never waits for a second transmission. The RAW RSSI gate
+  uses a 100 ms last-above hold and defaults to -90 dBm, matching Flipper
+  Unleashed. The analyzer's absolute RSSI floor is -105 dBm plus a 6 dB local
+  sideband margin. These are logic-tested, but threshold calibration and
+  false-detection rates still require RF hardware measurements.
+  The "header gap > 10 ms stop-threshold segments frames" assumption is proven
+  at the logic level; real on-air pulse timing remains hardware-pending.
 - Ansonic/2FSK TX actually demodulating on a real FM receiver (the GPTimer path
   keys GDO0; the CC1101 preset decides OOK vs 2FSK — unverified on hardware).
 - Brute force real RF emission (test only on your own / authorized equipment,
@@ -99,10 +118,19 @@ frame per reception (regression).
 
 ## Known limitations (logic)
 
-- Princeton fires on a single frame + 3:1 ratio + Te plausibility. Flipper
-  additionally requires two identical frames; if real-world false positives
-  appear, add a two-frame confirm (needs cross-burst state) or a Te-consistency
-  check. Empirically 0/20000 random false here.
+- Read decode only recognizes the protocol implementations in the firmware.
+  An unsupported remote can appear as RSSI-qualified Unknown, but cannot be
+  decoded into a key without adding its protocol. A protocol-valid frame is
+  strong format evidence, not source authentication.
+- Read RAW is intentionally broader than Read decode. RSSI qualification and
+  edge-count checks reduce idle/noise captures, but cannot prove a waveform
+  came from a particular remote. Strict mode does not wait for repeats; it
+  rejects truncated captures and deduplicates after the first report.
+- Read's displayed frequency is the CC1101 tuning setting. Spectrum and
+  Frequency Analyzer estimate an RSSI peak from discrete tuning steps; they
+  are not independent carrier-identification measurements. A narrower CC1101
+  channel filter can reduce adjacent-channel energy, but cannot authenticate
+  the source or create a brick-wall channel boundary.
 - Save writes a protocol Key File when the last capture decoded, else a RAW
   file; emulate re-encodes a Key File or replays a RAW file.
 - Linear: Flipper stores the raw data bits in the `.sub` (what we store too) but

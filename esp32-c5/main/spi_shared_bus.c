@@ -19,7 +19,7 @@ esp_err_t spi_shared_bus_init(void)
     const gpio_num_t chip_selects[] = {
         GPIO_NUM_1,  /* SD */
         GPIO_NUM_9,  /* nRF24 */
-        GPIO_NUM_23, /* CC1101 */
+        GPIO_NUM_10, /* CC1101 */
     };
     uint64_t cs_mask = 0;
     for (size_t i = 0; i < sizeof(chip_selects) / sizeof(chip_selects[0]); i++) {

@@ -6,6 +6,7 @@
 
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
@@ -29,16 +30,32 @@
 #define SUBGHZ_SPEC_MIN_SPAN   100000UL
 #define SUBGHZ_SPEC_MAX_SPAN   20000000UL
 #define SUBGHZ_RSSI_FLOOR      (-128)
+#define SUBGHZ_ANALYZER_MIN_RSSI (-105)
+#define SUBGHZ_ANALYZER_MIN_MARGIN_DB 6
+#define SUBGHZ_ANALYZER_REFINE_RADIUS_HZ 150000
+#define SUBGHZ_ANALYZER_REFINE_STEP_HZ   25000
+#define SUBGHZ_ANALYZER_NOISE_NEAR_HZ 1000000
+#define SUBGHZ_ANALYZER_NOISE_FAR_HZ  1500000
 
 /* Read RAW */
 #define SUBGHZ_RAW_CHUNK        16     /* durations per RAWBIN line (fits 256B) */
-#define SUBGHZ_SQUELCH_GUARD_MS 250    /* emit a burst if RSSI was high this recently */
-#define SUBGHZ_DEFAULT_RSSI_THR (-80)  /* squelch opens above this dBm */
+#define SUBGHZ_DEFAULT_RSSI_THR (-90)  /* matches Flipper Unleashed RAW default */
 #define SUBGHZ_RSSI_SQUELCH_OFF (-127) /* threshold <= this disables the squelch */
-#define SUBGHZ_RSSI_POLL_MS     2      /* RSSI sampling period (fast, single read) */
+#define SUBGHZ_RSSI_POLL_MS     2      /* RSSI sampling period */
+#define SUBGHZ_RSSI_CAPTURE_HOLD_MS 400 /* RMT idle-stop + callback latency */
+#define SUBGHZ_RSSI_SAMPLE_COUNT 3     /* median RSSI samples for sweep measurements */
+#define SUBGHZ_READ_DEDUPE_MS 1500
+#define SUBGHZ_READ_CONFIRM_WINDOW_MS 350 /* Longer than a natural repeat interval so two
+                                            * repeats within one button press can confirm. */
+#define SUBGHZ_RAW_STRICT_DEDUPE_MS 1500
+#define SUBGHZ_RAW_DEDUPE_TIMING_TOLERANCE_PCT 30
+#define SUBGHZ_RAW_DEDUPE_MIN_TOLERANCE_US 50
+
+_Static_assert(SUBGHZ_RSSI_SAMPLE_COUNT == 3,
+               "median_of_three requires exactly three RSSI samples");
 
 /* TX / emulate */
-#define SUBGHZ_GDO0_GPIO          24     /* CC1101 GDO0 (async serial data line) */
+#define SUBGHZ_GDO0_GPIO          26     /* CC1101 GDO0 (async serial data line) */
 #define SUBGHZ_TX_DEFAULT_REPEATS 3
 #define SUBGHZ_TX_MAX_REPEATS     100    /* bound total TX time */
 #define SUBGHZ_TX_GAP_MS          20     /* silence between repeated frames */
@@ -60,9 +77,11 @@ typedef enum {
 } subghz_mode_t;
 
 static bool s_ready;
+static volatile bool s_radio_fault;
 static uint32_t s_freq = SUBGHZ_DEFAULT_FREQ;
 static subghz_preset_id_t s_preset = SUBGHZ_DEFAULT_PRESET;
 static SemaphoreHandle_t s_lock;
+static SemaphoreHandle_t s_mode_lock;
 
 /* Sweep worker state */
 static volatile subghz_mode_t s_mode = SUBGHZ_MODE_IDLE;
@@ -75,7 +94,9 @@ static int s_spec_bins;
 /* Read RAW state */
 static volatile int s_rssi_threshold = SUBGHZ_DEFAULT_RSSI_THR;
 static volatile int s_last_rssi = SUBGHZ_RSSI_FLOOR;
-static volatile TickType_t s_rssi_high_tick;
+static portMUX_TYPE s_rssi_mux = portMUX_INITIALIZER_UNLOCKED;
+static TickType_t s_rssi_last_above_tick;
+static bool s_rssi_seen_above;
 static int32_t *s_raw_last;              /* PSRAM, kept for save (Stage 4)   */
 static size_t s_raw_last_count;
 static uint32_t s_raw_last_freq;
@@ -84,6 +105,17 @@ static bool s_raw_last_truncated;        /* last capture may have lost edges  */
 static uint32_t s_raw_seq;
 static subghz_decoded_t s_last_decoded;  /* last READ-mode decode (if any)    */
 static bool s_have_decoded;              /* s_last_decoded matches s_raw_last  */
+static subghz_decoded_t s_read_last_reported;
+static TickType_t s_read_last_reported_tick;
+static bool s_read_have_reported;
+static subghz_decoded_t s_read_pending;        /* candidate awaiting repeat confirmation */
+static TickType_t s_read_pending_tick;
+static bool s_read_have_pending;
+static TickType_t s_read_unknown_last_reported_tick;
+static bool s_read_have_unknown_reported;
+static bool s_readraw_strict;
+static bool s_raw_have_reported;
+static TickType_t s_raw_last_reported_tick;
 static uint32_t s_rssi_read_errors;      /* diagnostic: failed RSSI reads    */
 static uint32_t s_squelch_opens;         /* diagnostic: bursts past squelch  */
 
@@ -143,6 +175,40 @@ static const struct {
     {778999847UL, 928000000UL},
 };
 
+static int median_of_three(int a, int b, int c)
+{
+    if (a > b) { int tmp = a; a = b; b = tmp; }
+    if (b > c) { int tmp = b; b = c; c = tmp; }
+    if (a > b) { int tmp = a; a = b; b = tmp; }
+    return b;
+}
+
+static void update_rssi_squelch(int rssi)
+{
+    int threshold = s_rssi_threshold;
+    TickType_t now = xTaskGetTickCount();
+    portENTER_CRITICAL(&s_rssi_mux);
+    if (threshold <= SUBGHZ_RSSI_SQUELCH_OFF || rssi >= threshold) {
+        s_rssi_seen_above = true;
+        s_rssi_last_above_tick = now;
+    }
+    portEXIT_CRITICAL(&s_rssi_mux);
+}
+
+static bool rssi_squelch_is_open(void)
+{
+    if (s_rssi_threshold <= SUBGHZ_RSSI_SQUELCH_OFF) return true;
+    TickType_t now = xTaskGetTickCount();
+    bool recently_above;
+    portENTER_CRITICAL(&s_rssi_mux);
+    TickType_t age = now - s_rssi_last_above_tick;
+    TickType_t hold = pdMS_TO_TICKS(SUBGHZ_RSSI_CAPTURE_HOLD_MS);
+    if (hold == 0) hold = 1;
+    recently_above = s_rssi_seen_above && age <= hold;
+    portEXIT_CRITICAL(&s_rssi_mux);
+    return recently_above;
+}
+
 bool subghz_frequency_valid(uint32_t hz)
 {
     for (size_t i = 0; i < sizeof(s_bands) / sizeof(s_bands[0]); i++) {
@@ -162,8 +228,13 @@ esp_err_t subghz_init(void)
         s_lock = xSemaphoreCreateMutex();
         if (!s_lock) return ESP_ERR_NO_MEM;
     }
+    if (!s_mode_lock) {
+        s_mode_lock = xSemaphoreCreateMutex();
+        if (!s_mode_lock) return ESP_ERR_NO_MEM;
+    }
     s_freq = SUBGHZ_DEFAULT_FREQ;
     s_preset = SUBGHZ_DEFAULT_PRESET;
+    s_radio_fault = false;
     subghz_store_init();   /* load persisted storage target (NVS) */
     s_ready = true;
     return ESP_OK;
@@ -251,6 +322,18 @@ static esp_err_t configure_radio(subghz_preset_id_t preset_id, uint32_t freq)
     return cc1101_set_frequency(freq);
 }
 
+static esp_err_t wait_for_radio_state(uint8_t expected, int attempts)
+{
+    for (int i = 0; i < attempts; i++) {
+        uint8_t state = 0xFF;
+        esp_err_t err = cc1101_read_marcstate(&state);
+        if (err == ESP_OK && state == expected) return ESP_OK;
+        if (err != ESP_OK) return err;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
 /* Configure with the current (read/analyzer/spectrum) preset + frequency. */
 static esp_err_t session_configure(void)
 {
@@ -260,14 +343,45 @@ static esp_err_t session_configure(void)
 /* Return the chip to IDLE then SPWD, retrying a few times: at stop the
  * shared-bus radio gate may be briefly held (e.g. by an SD transaction),
  * which would fail the sleep and leave the CC1101 powered in RX. */
-static void subghz_power_down(void)
+static esp_err_t subghz_power_down(void)
 {
+    esp_err_t err = ESP_FAIL;
     for (int i = 0; i < 3; i++) {
-        cc1101_idle();
-        if (cc1101_sleep() == ESP_OK) return;
+        err = cc1101_idle();
+        if (err == ESP_OK) err = cc1101_sleep();
+        if (err == ESP_OK) return ESP_OK;
         vTaskDelay(pdMS_TO_TICKS(5));
     }
-    io_log("subghz: WARN power-down incomplete (bus busy?)\r\n");
+    err = cc1101_emergency_shutdown();
+    if (err == ESP_OK) {
+        io_log("subghz: WARN emergency radio shutdown used\r\n");
+        return ESP_OK;
+    }
+    s_radio_fault = true;
+    io_log("subghz: ERR power-down incomplete (%s)\r\n", esp_err_to_name(err));
+    return err;
+}
+
+static void subghz_tx_cleanup(void)
+{
+    bool radio_idle = subghz_power_down() == ESP_OK;
+    subghz_tx_end(radio_idle);
+    if (!radio_idle) {
+        io_log("subghz: CRITICAL GDO0 held low; radio state unconfirmed\r\n");
+    }
+}
+
+static esp_err_t subghz_capture_stop_and_wait(void)
+{
+    esp_err_t err = subghz_capture_stop();
+    if (err == ESP_ERR_TIMEOUT) {
+        io_log("subghz: WARN waiting for RX task teardown\r\n");
+    }
+    while (err == ESP_ERR_TIMEOUT) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        err = subghz_capture_stop();
+    }
+    return err;
 }
 
 /* Retune to hz, enter RX, wait for RX + RSSI to settle, and return RSSI in
@@ -279,9 +393,8 @@ static int measure_rssi_at(uint32_t hz)
 {
     if (cc1101_set_frequency(hz) != ESP_OK) return SUBGHZ_RSSI_FLOOR;
     if (cc1101_strobe(CC1101_STROBE_SRX, NULL) != ESP_OK) return SUBGHZ_RSSI_FLOOR;
-    /* ~1-4 ms: synth auto-calibration (~0.8 ms IDLE->RX) + RSSI settle. Confirm
-     * RX before sampling; if it never settles, report the floor rather than a
-     * stale/calibrating (garbage) sample for this bin/hop. */
+    /* Confirm RX before sampling; if it never settles, report the floor rather
+     * than a stale/calibrating sample for this bin/hop. */
     bool in_rx = false;
     for (int i = 0; i < 4; i++) {
         uint8_t st = 0;
@@ -292,7 +405,21 @@ static int measure_rssi_at(uint32_t hz)
         vTaskDelay(pdMS_TO_TICKS(1));
     }
     if (!in_rx) return SUBGHZ_RSSI_FLOOR;
-    return cc1101_read_rssi_dbm();
+
+    TickType_t sample_delay = pdMS_TO_TICKS(SUBGHZ_RSSI_POLL_MS);
+    if (sample_delay == 0) sample_delay = 1;
+    vTaskDelay(sample_delay);
+
+    int samples[SUBGHZ_RSSI_SAMPLE_COUNT];
+    for (size_t i = 0; i < SUBGHZ_RSSI_SAMPLE_COUNT; i++) {
+        uint8_t raw = 0;
+        if (cc1101_read_status(CC1101_STATUS_RSSI, &raw) != ESP_OK) {
+            return SUBGHZ_RSSI_FLOOR;
+        }
+        samples[i] = cc1101_rssi_raw_to_dbm(raw);
+        if (i + 1 < SUBGHZ_RSSI_SAMPLE_COUNT) vTaskDelay(sample_delay);
+    }
+    return median_of_three(samples[0], samples[1], samples[2]);
 }
 
 static void spectrum_sweep(uint32_t seq)
@@ -339,17 +466,156 @@ static void spectrum_sweep(uint32_t seq)
 static void analyzer_scan(void)
 {
     int peak = SUBGHZ_RSSI_FLOOR;
-    /* Seed to a real hop frequency, not 0: if every read fails/floors, the line
-     * still carries a plausible frequency with rssi=-128, which the app treats
-     * as "no detection" (it gates on rssi), instead of a bogus 0 Hz peak. */
-    uint32_t peakfq = s_hoplist[0];
+    uint32_t peakfq = 0;
     for (size_t i = 0; i < SUBGHZ_HOP_N && s_run; i++) {
         int r = measure_rssi_at(s_hoplist[i]);
         if (r > peak) { peak = r; peakfq = s_hoplist[i]; }
     }
     if (!s_run) return;
+
+    if (peak < SUBGHZ_ANALYZER_MIN_RSSI) {
+        io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
+        return;
+    }
+
+    int refined_peak = SUBGHZ_RSSI_FLOOR;
+    uint32_t refined_freq = peakfq;
+    for (int32_t offset = -SUBGHZ_ANALYZER_REFINE_RADIUS_HZ;
+         offset <= SUBGHZ_ANALYZER_REFINE_RADIUS_HZ && s_run;
+         offset += SUBGHZ_ANALYZER_REFINE_STEP_HZ) {
+        int64_t candidate = (int64_t)peakfq + offset;
+        if (candidate < 0 || !subghz_frequency_valid((uint32_t)candidate)) {
+            continue;
+        }
+        int r = measure_rssi_at((uint32_t)candidate);
+        if (r > refined_peak) {
+            refined_peak = r;
+            refined_freq = (uint32_t)candidate;
+        }
+    }
+    if (!s_run) return;
+
+    /* Compare the refined channel against nearby sidebands outside the
+     * widest configured receive bandwidth (650 kHz). */
+    static const int32_t noise_offsets[] = {
+        -SUBGHZ_ANALYZER_NOISE_FAR_HZ,
+        -SUBGHZ_ANALYZER_NOISE_NEAR_HZ,
+        SUBGHZ_ANALYZER_NOISE_NEAR_HZ,
+        SUBGHZ_ANALYZER_NOISE_FAR_HZ,
+    };
+    int noise_samples[sizeof(noise_offsets) / sizeof(noise_offsets[0])];
+    size_t noise_count = 0;
+    for (size_t i = 0;
+         i < sizeof(noise_offsets) / sizeof(noise_offsets[0]) && s_run;
+         i++) {
+        int64_t candidate = (int64_t)refined_freq + noise_offsets[i];
+        if (candidate < 0 || !subghz_frequency_valid((uint32_t)candidate)) {
+            continue;
+        }
+        int rssi = measure_rssi_at((uint32_t)candidate);
+        if (rssi > SUBGHZ_RSSI_FLOOR) noise_samples[noise_count++] = rssi;
+    }
+    if (!s_run) return;
+
+    if (noise_count < 2) {
+        io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
+        return;
+    }
+    for (size_t i = 1; i < noise_count; i++) {
+        int value = noise_samples[i];
+        size_t j = i;
+        while (j > 0 && noise_samples[j - 1] > value) {
+            noise_samples[j] = noise_samples[j - 1];
+            j--;
+        }
+        noise_samples[j] = value;
+    }
+    int noise_median = noise_samples[noise_count / 2];
+    if (noise_count % 2 == 0) {
+        noise_median = (noise_samples[noise_count / 2 - 1] +
+                        noise_samples[noise_count / 2]) / 2;
+    }
+    if (refined_peak < SUBGHZ_ANALYZER_MIN_RSSI ||
+        refined_peak - noise_median < SUBGHZ_ANALYZER_MIN_MARGIN_DB) {
+        io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
+        return;
+    }
     io_log("subghz: ANALYZER peakfq=%lu rssi=%d\r\n",
-           (unsigned long)peakfq, peak);
+           (unsigned long)refined_freq, refined_peak);
+}
+
+static bool decoded_frame_matches(const subghz_decoded_t *a,
+                                  const subghz_decoded_t *b)
+{
+    /* TE can vary between captures; identity is protocol, bit count, and key. */
+    return a->proto == b->proto && a->bits == b->bits && a->key == b->key;
+}
+
+/* Require the same protocol, bit count, and key twice within a short window
+ * before treating a decode as a detected signal. */
+static bool read_confirm_repeat(const subghz_decoded_t *decoded)
+{
+    TickType_t now = xTaskGetTickCount();
+    TickType_t window = pdMS_TO_TICKS(SUBGHZ_READ_CONFIRM_WINDOW_MS);
+    bool confirmed = s_read_have_pending &&
+                     decoded_frame_matches(&s_read_pending, decoded) &&
+                     (TickType_t)(now - s_read_pending_tick) < window;
+    s_read_pending = *decoded;
+    s_read_pending_tick = now;
+    s_read_have_pending = true;
+    return confirmed;
+}
+
+static bool read_should_report(const subghz_decoded_t *decoded)
+{
+    TickType_t now = xTaskGetTickCount();
+    TickType_t dedupe_window = pdMS_TO_TICKS(SUBGHZ_READ_DEDUPE_MS);
+    if (s_read_have_reported &&
+        decoded_frame_matches(&s_read_last_reported, decoded) &&
+        (TickType_t)(now - s_read_last_reported_tick) < dedupe_window) {
+        return false;
+    }
+    s_read_last_reported = *decoded;
+    s_read_last_reported_tick = now;
+    s_read_have_reported = true;
+    return true;
+}
+
+static bool read_unknown_should_report(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    TickType_t dedupe_window = pdMS_TO_TICKS(SUBGHZ_READ_DEDUPE_MS);
+    if (s_read_have_unknown_reported &&
+        (TickType_t)(now - s_read_unknown_last_reported_tick) < dedupe_window) {
+        return false;
+    }
+    s_read_unknown_last_reported_tick = now;
+    s_read_have_unknown_reported = true;
+    return true;
+}
+
+static uint64_t raw_duration_magnitude(int32_t duration)
+{
+    return duration < 0 ? (uint64_t)(-(int64_t)duration) : (uint64_t)duration;
+}
+
+static bool raw_timings_match(const int32_t *a, size_t a_count,
+                              const int32_t *b, size_t b_count)
+{
+    if (!a || !b || a_count != b_count) return false;
+    for (size_t i = 0; i < a_count; i++) {
+        if ((a[i] < 0) != (b[i] < 0)) return false;
+        uint64_t a_us = raw_duration_magnitude(a[i]);
+        uint64_t b_us = raw_duration_magnitude(b[i]);
+        uint64_t diff = a_us > b_us ? a_us - b_us : b_us - a_us;
+        uint64_t tolerance =
+            (a_us * SUBGHZ_RAW_DEDUPE_TIMING_TOLERANCE_PCT) / 100;
+        if (tolerance < SUBGHZ_RAW_DEDUPE_MIN_TOLERANCE_US) {
+            tolerance = SUBGHZ_RAW_DEDUPE_MIN_TOLERANCE_US;
+        }
+        if (diff > tolerance) return false;
+    }
+    return true;
 }
 
 /* Capture callback (runs in the capture rx_task): apply the RSSI squelch,
@@ -359,61 +625,133 @@ static void raw_capture_cb(const int32_t *durations, size_t count,
                            bool truncated, void *ctx)
 {
     (void)ctx;
-    /* Squelch gate: surface a burst only if RSSI was above threshold very
-     * recently (i.e. during this burst), rejecting the continuous OOK
-     * data-slicer noise. Skipped entirely when disabled with a very low
-     * threshold, so no structurally-valid burst is ever lost to a missed
-     * RSSI sample. */
+
+    /* FIX ROOT-CAUSE: capture yang memenuhi seluruh buffer 512-simbol tanpa
+     * pernah mencapai idle-gap bersih BUKAN sinyal tunggal nyata — protokol
+     * terlebar yang didukung (Phoenix_V2, 52 bit) paling banyak butuh ~108
+     * edge, jadi 1024 edge cuma terjadi kalau GDO0 tidak pernah diam karena
+     * band memang berisik. Buang tanpa syarat, sebelum squelch/decode apa
+     * pun, untuk KEDUA mode. Ini memperbaiki dua gejala sekaligus: noise
+     * tampil sebagai "sinyal" di RAW, dan READ tidak pernah decode sama
+     * sekali (decode selalu mensyaratkan !truncated — kalau band cukup
+     * berisik sampai semua capture truncated, decode tidak pernah dapat
+     * kesempatan jalan). */
+    if (truncated) {
+        return;
+    }
+
+    bool read_mode = (s_mode == SUBGHZ_MODE_READ);
+
+    /* Filter noise terakhir yang tersisa untuk RAW: apakah energi RF memang
+     * baru saja terlihat (rssi_squelch_is_open(), lihat jendela yang sudah
+     * dilebarkan di atas). READ mode tidak perlu ini di jalur DECODED —
+     * decode protokol yang berhasil adalah kecocokan presisi puluhan edge
+     * dengan timing spesifik, sudah jadi filter noise yang sangat kuat
+     * sendirian; menggerbang itu dengan RSSI lagi cuma menambah risiko
+     * menolak capture yang justru sudah benar-benar ter-decode, tanpa
+     * manfaat keamanan. */
     bool squelch_on = (s_rssi_threshold > SUBGHZ_RSSI_SQUELCH_OFF);
-    if (squelch_on &&
-        (xTaskGetTickCount() - s_rssi_high_tick) >=
-            pdMS_TO_TICKS(SUBGHZ_SQUELCH_GUARD_MS)) {
-        return;   /* squelch closed: treated as noise, dropped */
+    if (!read_mode && squelch_on && !rssi_squelch_is_open()) {
+        return;
     }
-    /* Count "passed the squelch" only when the squelch is actually active, so
-     * the diagnostic stays meaningful (bursts vs squelch) when it is disabled. */
-    if (squelch_on) s_squelch_opens++;
-    uint32_t seq = ++s_raw_seq;
+    if (squelch_on && !read_mode) s_squelch_opens++;
 
-    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
-        if (s_raw_last) {
-            size_t m = count > SUBGHZ_RAW_MAX_TIMINGS ? SUBGHZ_RAW_MAX_TIMINGS
-                                                      : count;
-            memcpy(s_raw_last, durations, m * sizeof(int32_t));
-            s_raw_last_count = m;
-            s_raw_last_freq = s_freq;
-            s_raw_last_preset = s_preset;
-            s_raw_last_truncated = truncated;
-        }
-        s_have_decoded = false;   /* cleared each capture; set on READ decode */
-        xSemaphoreGive(s_lock);
-    }
+    bool strict_raw = !read_mode && s_mode == SUBGHZ_MODE_READ_RAW &&
+                      s_readraw_strict;
 
-    /* READ mode: decode known protocols and report the result instead of the
-     * raw waveform (the raw is still stashed as last-capture for save). */
-    if (s_mode == SUBGHZ_MODE_READ) {
-        subghz_decoded_t dec;
+    subghz_decoded_t dec = {0};
+    bool decoded = false;
+    if (read_mode) {
         const subghz_preset_t *cp = subghz_preset_get(s_preset);
         bool fm = cp && cp->fm;   /* capture modulation (explicit preset flag) */
-        if (subghz_protocol_decode(durations, count, fm, &dec)) {
-            if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
+        decoded = subghz_protocol_decode(durations, count, fm, &dec);
+    }
+    bool decoded_accepted = decoded && read_confirm_repeat(&dec);
+    bool report_decoded = false;
+    /* FIX: unknown-burst TIDAK punya validasi protokol sama sekali — beda
+     * dari jalur decoded yang sudah tervalidasi puluhan edge presisi.
+     * Gerbang RSSI di sini saja (bukan di jalur decoded di atas) supaya
+     * tidak melanggar rasional squelch-bypass yang sudah ada untuk decode
+     * sukses, sambil tetap menutup sumber noise terbesar: burst gagal-decode
+     * yang sebelumnya lolos tanpa validasi apa pun. */
+    bool report_unknown = read_mode && !decoded && rssi_squelch_is_open();
+
+    /* Keep the waveform and its decoded fields as one atomic snapshot. In READ
+     * mode, one complete decoded frame is sufficient. Preserve an already
+     * selected decode when an unrelated or undecodable burst arrives. */
+    bool emit_raw_capture = true;
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
+        bool preserve_decoded = read_mode && s_have_decoded && !decoded_accepted;
+        bool capture_updated = false;
+        TickType_t now = xTaskGetTickCount();
+        TickType_t raw_dedupe_window =
+            pdMS_TO_TICKS(SUBGHZ_RAW_STRICT_DEDUPE_MS);
+        bool duplicate_raw = strict_raw && s_raw_last &&
+            s_raw_have_reported && s_raw_last_count == count &&
+            s_raw_last_freq == s_freq &&
+            raw_timings_match(s_raw_last, s_raw_last_count, durations, count) &&
+            (TickType_t)(now - s_raw_last_reported_tick) < raw_dedupe_window;
+        if (duplicate_raw) emit_raw_capture = false;
+        if (s_raw_last && !preserve_decoded) {
+            if (!duplicate_raw) {
+                size_t m = count > SUBGHZ_RAW_MAX_TIMINGS ? SUBGHZ_RAW_MAX_TIMINGS
+                                                          : count;
+                memcpy(s_raw_last, durations, m * sizeof(int32_t));
+                s_raw_last_count = m;
+                s_raw_last_freq = s_freq;
+                s_raw_last_preset = s_preset;
+                s_raw_last_truncated = truncated;   /* selalu false di titik ini */
+                capture_updated = true;
+            } else {
+                capture_updated = true;
+            }
+        }
+        if (strict_raw) {
+            if (capture_updated && !duplicate_raw) {
+                s_raw_have_reported = true;
+                s_raw_last_reported_tick = now;
+            } else {
+                emit_raw_capture = false;
+            }
+        }
+        if (read_mode) {
+            if (decoded_accepted && capture_updated) {
                 s_last_decoded = dec;     /* for `save` as a protocol Key File */
                 s_have_decoded = true;
-                xSemaphoreGive(s_lock);
+                report_decoded = read_should_report(&dec);
+            } else if (!preserve_decoded && capture_updated) {
+                s_have_decoded = false;
             }
+            if (report_unknown) {
+                report_unknown = read_unknown_should_report();
+            }
+        } else {
+            s_have_decoded = false;
+        }
+        xSemaphoreGive(s_lock);
+    } else {
+        io_log("subghz: ERR capture-lock\r\n");
+        if (strict_raw) emit_raw_capture = false;
+        report_unknown = false;   /* FIX: fail-closed, jangan lewati dedupe 1.5s */
+    }
+
+    if (read_mode) {
+        if (report_decoded) {
             io_log("subghz: READ proto=%s bits=%u key=0x%08lX%08lX te=%lu "
                    "fq=%lu rssi=%d\r\n",
                    subghz_protocol_name(dec.proto), dec.bits,
                    (unsigned long)(uint32_t)(dec.key >> 32),
                    (unsigned long)(uint32_t)(dec.key & 0xFFFFFFFFULL),
                    (unsigned long)dec.te, (unsigned long)s_freq, s_last_rssi);
-        } else {
+        } else if (report_unknown) {
             io_log("subghz: READ proto=unknown n=%u fq=%lu rssi=%d\r\n",
                    (unsigned)count, (unsigned long)s_freq, s_last_rssi);
         }
         return;
     }
 
+    if (!emit_raw_capture) return;
+    uint32_t seq = ++s_raw_seq;
     const subghz_preset_t *preset = subghz_preset_get(s_preset);
     io_log("subghz: RAW seq=%lu n=%u fq=%lu preset=%s rssi=%d trunc=%d\r\n",
            (unsigned long)seq, (unsigned)count, (unsigned long)s_freq,
@@ -437,9 +775,14 @@ static void raw_capture_cb(const int32_t *durations, size_t count,
 /* Clear worker state and self-delete. */
 static void worker_finish(void)
 {
-    s_run = false;
-    s_mode = SUBGHZ_MODE_IDLE;
-    s_worker_alive = false;
+    if (xSemaphoreTake(s_mode_lock, portMAX_DELAY) == pdTRUE) {
+        s_run = false;
+        s_mode = SUBGHZ_MODE_IDLE;
+        s_worker_alive = false;
+        xSemaphoreGive(s_mode_lock);
+    } else {
+        io_log("subghz: ERR mode-lock during worker shutdown\r\n");
+    }
     vTaskDelete(NULL);
 }
 
@@ -454,25 +797,48 @@ static void subghz_worker(void *arg)
             cerr = configure_radio(s_tx_preset, s_tx_freq);  /* TX preset+freq */
             xSemaphoreGive(s_lock);
         }
+        if (cerr == ESP_OK && !s_run) {
+            (void)subghz_power_down();
+            worker_finish();
+            return;
+        }
         if (cerr == ESP_OK) cerr = subghz_tx_begin(SUBGHZ_GDO0_GPIO);
         if (cerr != ESP_OK) {
             io_log("subghz: ERR tx-setup (%s)\r\n", esp_err_to_name(cerr));
-            subghz_tx_end();          /* no-op if begin didn't run */
-            subghz_power_down();
+            subghz_tx_cleanup();
+            worker_finish();
+            return;
+        }
+        if (!s_run) {
+            subghz_tx_cleanup();
             worker_finish();
             return;
         }
         esp_err_t stx = cc1101_strobe(CC1101_STROBE_STX, NULL);  /* async TX */
+        if (stx == ESP_OK) {
+            stx = wait_for_radio_state(CC1101_MARC_STATE_TX, 5);
+        }
         if (stx != ESP_OK) {
             /* If the chip never entered TX, driving GDO0 would transmit
              * nothing — don't report a phantom success. */
-            io_log("subghz: ERR tx-strobe (%s)\r\n", esp_err_to_name(stx));
-            subghz_tx_end();
-            subghz_power_down();
+             io_log("subghz: ERR tx-strobe (%s)\r\n", esp_err_to_name(stx));
+             subghz_tx_cleanup();
+             worker_finish();
+             return;
+        }
+        if (!s_run) {
+             (void)cc1101_idle();
+             subghz_tx_cleanup();
             worker_finish();
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(2));              /* let the PA/synth settle */
+        if (!s_run) {
+            (void)cc1101_idle();
+            subghz_tx_cleanup();
+            worker_finish();
+            return;
+        }
         size_t subus = subghz_tx_count_below_min(s_tx_src, s_tx_count);
         if (subus > 0) {
             io_log("subghz: WARN tx-subus n=%u (<5us, clamped; timing not "
@@ -484,7 +850,9 @@ static void subghz_worker(void *arg)
         for (int r = 0; r < s_tx_repeats && s_run; r++) {
             esp_err_t te = subghz_tx_send(s_tx_src, s_tx_count);
             if (te != ESP_OK) {
-                io_log("subghz: ERR tx-send (%s)\r\n", esp_err_to_name(te));
+                if (s_run) {
+                    io_log("subghz: ERR tx-send (%s)\r\n", esp_err_to_name(te));
+                }
                 break;
             }
             sent++;
@@ -496,8 +864,7 @@ static void subghz_worker(void *arg)
          * PA is off BEFORE GDO0 is released to a floating input — otherwise a
          * failed idle could leave the PA following a floating pin (spurious RF).
          * GDO0 is still driven low here, keeping the carrier off meanwhile. */
-        subghz_power_down();
-        subghz_tx_end();      /* GDO0 back to input (PA already off) */
+        subghz_tx_cleanup();
         io_log("subghz: TX DONE sent=%d maxlate_us=%lu\r\n",
                sent, (unsigned long)subghz_tx_max_late_us());
         worker_finish();
@@ -510,16 +877,38 @@ static void subghz_worker(void *arg)
             cerr = configure_radio(s_tx_preset, s_tx_freq);
             xSemaphoreGive(s_lock);
         }
+        if (cerr == ESP_OK && !s_run) {
+            (void)subghz_power_down();
+            worker_finish();
+            return;
+        }
         if (cerr == ESP_OK) cerr = subghz_tx_begin(SUBGHZ_GDO0_GPIO);
+        if (cerr == ESP_OK && !s_run) {
+            (void)subghz_power_down();
+            subghz_tx_end(true);
+            worker_finish();
+            return;
+        }
         if (cerr == ESP_OK) cerr = cc1101_strobe(CC1101_STROBE_STX, NULL);
         if (cerr != ESP_OK) {
             io_log("subghz: ERR brute-setup (%s)\r\n", esp_err_to_name(cerr));
-            subghz_tx_end();
-            subghz_power_down();
+            subghz_tx_cleanup();
+            worker_finish();
+            return;
+        }
+        if (!s_run) {
+            (void)cc1101_idle();
+            subghz_tx_cleanup();
             worker_finish();
             return;
         }
         vTaskDelay(pdMS_TO_TICKS(2));
+        if (!s_run) {
+            (void)cc1101_idle();
+            subghz_tx_cleanup();
+            worker_finish();
+            return;
+        }
         io_log("subghz: BRUTE START proto=%s bits=%u from=%lu to=%lu\r\n",
                subghz_protocol_name(s_brute_proto), s_brute_bits,
                (unsigned long)s_brute_idx, (unsigned long)s_brute_end);
@@ -535,7 +924,10 @@ static void subghz_worker(void *arg)
                 if (te != ESP_OK) break;
             }
             if (te != ESP_OK) {
-                io_log("subghz: ERR brute-send (%s)\r\n", esp_err_to_name(te));
+                if (s_run) {
+                    io_log("subghz: ERR brute-send (%s)\r\n",
+                           esp_err_to_name(te));
+                }
                 s_brute_idx = code;    /* resume will retry this code */
                 break;
             }
@@ -545,8 +937,7 @@ static void subghz_worker(void *arg)
                        (unsigned long)code, (unsigned long)s_brute_end);
             }
         }
-        subghz_power_down();
-        subghz_tx_end();
+        subghz_tx_cleanup();
         /* idx past the end => the whole span was sent; otherwise we stopped or
          * errored and idx is the resume point. */
         if (s_brute_idx > s_brute_end) {
@@ -575,11 +966,22 @@ static void subghz_worker(void *arg)
         /* Arm the RMT capture BEFORE entering RX so no GDO0 data is lost in the
          * gap between SRX and the receiver being ready. */
         err = subghz_capture_start(raw_capture_cb, NULL);
+        if (err == ESP_OK && !s_run) {
+            (void)subghz_capture_stop_and_wait();
+            (void)subghz_power_down();
+            worker_finish();
+            return;
+        }
         if (err == ESP_OK) err = cc1101_strobe(CC1101_STROBE_SRX, NULL);
+        if (err == ESP_OK) {
+            err = wait_for_radio_state(CC1101_MARC_STATE_RX, 5);
+        }
+        if (err == ESP_OK && !s_run) err = cc1101_idle();
         if (err != ESP_OK) {
-            subghz_capture_stop();   /* no-op if it never started */
+            (void)cc1101_idle();
+            (void)subghz_capture_stop_and_wait();
             io_log("subghz: ERR %s-start (%s)\r\n", mname, esp_err_to_name(err));
-            subghz_power_down();
+            (void)subghz_power_down();
             worker_finish();
             return;
         }
@@ -587,10 +989,9 @@ static void subghz_worker(void *arg)
         io_log("subghz: %s START fq=%lu preset=%s thr=%d\r\n",
                mname, (unsigned long)s_freq, preset ? preset->name : "?",
                s_rssi_threshold);
-        /* Poll RSSI to drive the capture-side squelch; the RMT capture task
-         * delivers bursts asynchronously via raw_capture_cb. A FAILED read is
-         * counted and deliberately does NOT refresh s_rssi_high_tick, so a read
-         * error can never masquerade as a strong signal and open the squelch. */
+        /* Poll RSSI for RAW squelch qualification. The last above-threshold
+         * sample is held briefly so RMT's idle stop and queued callback do not
+         * lose the just-finished RF frame. Read mode uses protocol validation. */
         while (s_run) {
             /* If the capture task self-aborted (re-arm/overflow error), don't
              * keep spinning as a live-but-deaf session — surface it and stop. */
@@ -604,12 +1005,17 @@ static void subghz_worker(void *arg)
             } else {
                 int r = cc1101_rssi_raw_to_dbm(raw);
                 s_last_rssi = r;
-                if (r > s_rssi_threshold) s_rssi_high_tick = xTaskGetTickCount();
+                update_rssi_squelch(r);
             }
             vTaskDelay(pdMS_TO_TICKS(SUBGHZ_RSSI_POLL_MS));
         }
-        subghz_capture_stop();
-        subghz_power_down();
+        (void)cc1101_idle();
+        esp_err_t stop_err = subghz_capture_stop_and_wait();
+        if (stop_err != ESP_OK) {
+            io_log("subghz: ERR capture-stop (%s)\r\n",
+                   esp_err_to_name(stop_err));
+        }
+        (void)subghz_power_down();
         io_log("subghz: %s STOPPED\r\n", mname);
         worker_finish();
         return;
@@ -624,7 +1030,7 @@ static void subghz_worker(void *arg)
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 
-    subghz_power_down();
+    (void)subghz_power_down();
     io_log(spectrum ? "subghz: SPECTRUM STOPPED\r\n"
                     : "subghz: ANALYZER STOPPED\r\n");
     worker_finish();
@@ -637,8 +1043,28 @@ bool subghz_is_busy(void)
 
 esp_err_t subghz_stop(void)
 {
-    if (!s_worker_alive) return ESP_OK;
+    if (!s_mode_lock) {
+        if (s_worker_alive) return ESP_ERR_INVALID_STATE;
+        return s_radio_fault ? ESP_FAIL : ESP_OK;
+    }
+    if (xSemaphoreTake(s_mode_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_worker_alive) {
+        xSemaphoreGive(s_mode_lock);
+        return s_radio_fault ? ESP_FAIL : ESP_OK;
+    }
     s_run = false;
+    bool tx_mode = s_mode == SUBGHZ_MODE_TX || s_mode == SUBGHZ_MODE_BRUTE;
+    xSemaphoreGive(s_mode_lock);
+
+    esp_err_t cancel_err = ESP_OK;
+    if (tx_mode) {
+        cancel_err = subghz_tx_cancel();
+        if (cancel_err != ESP_OK) {
+            io_log("subghz: ERR tx-cancel (%s)\r\n", esp_err_to_name(cancel_err));
+        }
+    }
     /* Wait comfortably longer than the worker's own shutdown: in READ_RAW it
      * runs subghz_capture_stop() (up to ~1.5 s if a slow telemetry drain delays
      * the capture task) + power-down before clearing s_worker_alive. 3 s keeps
@@ -647,7 +1073,9 @@ esp_err_t subghz_stop(void)
     for (int i = 0; i < 300 && s_worker_alive; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    return s_worker_alive ? ESP_ERR_TIMEOUT : ESP_OK;
+    if (s_worker_alive) return ESP_ERR_TIMEOUT;
+    if (s_radio_fault) return ESP_FAIL;
+    return cancel_err;
 }
 
 /* Create the sweep worker for `mode`. Caller MUST have stopped any previous
@@ -656,6 +1084,19 @@ esp_err_t subghz_stop(void)
 static esp_err_t start_mode(subghz_mode_t mode)
 {
     if (!s_ready) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_mode_lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_radio_fault) {
+        xSemaphoreGive(s_mode_lock);
+        io_log("subghz: ERR radio-state-unknown (reboot required)\r\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_worker_alive || s_mode != SUBGHZ_MODE_IDLE) {
+        xSemaphoreGive(s_mode_lock);
+        io_log("subghz: ERR mode-already-active\r\n");
+        return ESP_ERR_INVALID_STATE;
+    }
     s_mode = mode;
     s_run = true;
     s_worker_alive = true;
@@ -663,9 +1104,11 @@ static esp_err_t start_mode(subghz_mode_t mode)
         s_run = false;
         s_mode = SUBGHZ_MODE_IDLE;
         s_worker_alive = false;
+        xSemaphoreGive(s_mode_lock);
         io_log("subghz: ERR task-create\r\n");
         return ESP_ERR_NO_MEM;
     }
+    xSemaphoreGive(s_mode_lock);
     return ESP_OK;
 }
 
@@ -764,7 +1207,7 @@ int subghz_get_rssi_threshold(void)
  * previous mode, ensure the PSRAM last-capture buffer (kept after stop so a
  * later `subghz save` can read it), reset diagnostics, and start with the
  * squelch firmly CLOSED (no stale RSSI can open it before the first poll). */
-static esp_err_t start_capture_mode(subghz_mode_t mode)
+static esp_err_t start_capture_mode(subghz_mode_t mode, bool strict_raw)
 {
     esp_err_t stop_err = subghz_stop();
     if (stop_err != ESP_OK) {
@@ -779,19 +1222,42 @@ static esp_err_t start_capture_mode(subghz_mode_t mode)
             return ESP_ERR_NO_MEM;
         }
     }
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    s_raw_last_count = 0;
+    s_raw_last_truncated = false;
+    s_have_decoded = false;
+    memset(&s_last_decoded, 0, sizeof(s_last_decoded));
+    xSemaphoreGive(s_lock);
     s_rssi_read_errors = 0;
     s_squelch_opens = 0;
     s_raw_seq = 0;
+    memset(&s_read_last_reported, 0, sizeof(s_read_last_reported));
+    s_read_last_reported_tick = 0;
+    s_read_have_reported = false;
+    s_read_unknown_last_reported_tick = 0;
+    s_read_have_unknown_reported = false;
+    s_read_have_pending = false;
+    s_read_pending_tick = 0;
+    memset(&s_read_pending, 0, sizeof(s_read_pending));
+    s_readraw_strict = (mode == SUBGHZ_MODE_READ_RAW) && strict_raw;
+    s_raw_have_reported = false;
+    s_raw_last_reported_tick = 0;
     s_last_rssi = SUBGHZ_RSSI_FLOOR;
-    s_rssi_high_tick = xTaskGetTickCount() -
-                       pdMS_TO_TICKS(SUBGHZ_SQUELCH_GUARD_MS) - 1;
-    return start_mode(mode);
+    portENTER_CRITICAL(&s_rssi_mux);
+    s_rssi_last_above_tick = 0;
+    s_rssi_seen_above = false;
+    portEXIT_CRITICAL(&s_rssi_mux);
+    esp_err_t start_err = start_mode(mode);
+    if (start_err != ESP_OK) s_readraw_strict = false;
+    return start_err;
 }
 
-esp_err_t subghz_readraw_start(void)
+esp_err_t subghz_readraw_start(bool strict)
 {
     if (!s_ready) return ESP_ERR_INVALID_STATE;
-    return start_capture_mode(SUBGHZ_MODE_READ_RAW);
+    return start_capture_mode(SUBGHZ_MODE_READ_RAW, strict);
 }
 
 esp_err_t subghz_readraw_stop(void)
@@ -802,7 +1268,7 @@ esp_err_t subghz_readraw_stop(void)
 esp_err_t subghz_read_start(void)
 {
     if (!s_ready) return ESP_ERR_INVALID_STATE;
-    return start_capture_mode(SUBGHZ_MODE_READ);
+    return start_capture_mode(SUBGHZ_MODE_READ, false);
 }
 
 esp_err_t subghz_read_stop(void)
@@ -901,36 +1367,53 @@ esp_err_t subghz_save(const char *name)
 {
     if (!s_ready) return ESP_ERR_INVALID_STATE;
     if (!name) return ESP_ERR_INVALID_ARG;
-    if (subghz_is_busy()) {
-        io_log("subghz: ERR busy (stop before saving)\r\n");
+    bool capture_active = (s_mode == SUBGHZ_MODE_READ || s_mode == SUBGHZ_MODE_READ_RAW);
+    if (subghz_is_busy() && !capture_active) {
+        io_log("subghz: ERR busy (stop TX/sweep before saving)\r\n");
         return ESP_ERR_INVALID_STATE;
     }
+    int32_t *snapshot = heap_caps_malloc(SUBGHZ_RAW_MAX_TIMINGS * sizeof(int32_t),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!snapshot) {
+        io_log("subghz: ERR save-oom\r\n");
+        return ESP_ERR_NO_MEM;
+    }
     if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
+        heap_caps_free(snapshot);
         return ESP_ERR_INVALID_STATE;
     }
     if (!s_raw_last || s_raw_last_count == 0) {
         xSemaphoreGive(s_lock);
+        heap_caps_free(snapshot);
         io_log("subghz: NOCAP\r\n");   /* nothing captured yet */
         return ESP_ERR_NOT_FOUND;
     }
-    const subghz_preset_t *p = subghz_preset_get(s_raw_last_preset);
+    size_t count = s_raw_last_count;
+    memcpy(snapshot, s_raw_last, count * sizeof(int32_t));
+    uint32_t freq = s_raw_last_freq;
+    subghz_preset_id_t preset_id = s_raw_last_preset;
+    bool truncated = s_raw_last_truncated;
+    bool have_decoded = s_have_decoded;
+    subghz_decoded_t decoded = s_last_decoded;
+    xSemaphoreGive(s_lock);
+
+    const subghz_preset_t *p = subghz_preset_get(preset_id);
     esp_err_t err;
-    if (s_have_decoded) {
+    if (have_decoded) {
         /* The last capture decoded to a known protocol -> save a Key File
          * (Protocol/Bit/Key/TE), like Flipper's Read -> Save. */
         err = subghz_store_save_key(name,
-                                    subghz_protocol_name(s_last_decoded.proto),
-                                    s_last_decoded.bits, s_last_decoded.key,
-                                    s_last_decoded.te, s_raw_last_freq,
+                                    subghz_protocol_name(decoded.proto),
+                                    decoded.bits, decoded.key, decoded.te, freq,
                                     p ? p->flipper_name : NULL);
     } else {
-        if (s_raw_last_truncated) {
+        if (truncated) {
             io_log("subghz: WARN saving truncated capture (edges may be lost)\r\n");
         }
-        err = subghz_store_save_raw(name, s_raw_last, s_raw_last_count,
-                                    s_raw_last_freq, p ? p->flipper_name : NULL);
+        err = subghz_store_save_raw(name, snapshot, count, freq,
+                                    p ? p->flipper_name : NULL);
     }
-    xSemaphoreGive(s_lock);
+    heap_caps_free(snapshot);
 
     if (err == ESP_ERR_INVALID_STATE) {
         io_log("subghz: ERR no-storage-target (set `subghz storage <littlefs|sd>`)\r\n");
@@ -1130,6 +1613,10 @@ esp_err_t subghz_status(void)
         io_log("subghz: ERR busy (sweep active)\r\n");
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_radio_fault) {
+        io_log("subghz: ERR radio-state-unknown (reboot required)\r\n");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1168,7 +1655,11 @@ esp_err_t subghz_status(void)
     int rssi = cc1101_read_rssi_dbm();
     cc1101_read_marcstate(&marc);
 
-    subghz_power_down();
+    esp_err_t power_err = subghz_power_down();
+    if (power_err != ESP_OK) {
+        xSemaphoreGive(s_lock);
+        return power_err;
+    }
 
     const subghz_preset_t *preset = subghz_preset_get(s_preset);
     io_log("subghz: STATUS present=1 ver=0x%02X part=0x%02X fq=%lu preset=%s "

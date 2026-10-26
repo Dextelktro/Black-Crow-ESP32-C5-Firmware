@@ -39,6 +39,7 @@ typedef struct {
     uint32_t   address;
     uint32_t   command;
     uint8_t    bits;        /* protocol-specific bit count (Sony: 12/15/20) */
+    bool       toggle;      /* stateful RC5/RC6 toggle bit */
     uint32_t   carrier_hz;  /* filled by ir_encode(); 0 = default 38 kHz    */
     float      duty;        /* filled by ir_encode(); 0 = default 0.33      */
 } ir_message_t;
@@ -51,8 +52,7 @@ const char *ir_proto_name(ir_proto_t p);
 ir_proto_t  ir_proto_from_name(const char *s);
 
 /* Minimum number of frames a protocol should transmit for a receiver to accept
- * it (Flipper's per-variant repeat_count): Sony/SIRC needs 3, the rest 1.
- * The universal sweep uses this so repeat-dependent devices stay reliable. */
+ * it (Flipper's per-variant repeat_count). */
 int ir_proto_min_repeats(ir_proto_t p);
 
 /* Encode a parsed message into a microsecond timing list.

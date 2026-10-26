@@ -52,8 +52,10 @@ subghz_proto_id_t subghz_protocol_from_name(const char *name);
 bool subghz_protocol_is_fm(subghz_proto_id_t id);
 
 /* Try the known protocols of the capture's modulation against one frame.
- * Returns true and fills *out on the first match; otherwise sets
- * out->proto = UNKNOWN and returns false. durations: signed us, +high/-low,
+ * Isolated sub-50 us glitches are repaired in a private decoder buffer;
+ * caller-owned durations remain unchanged. Returns true and fills *out on the
+ * first match; otherwise sets out->proto = UNKNOWN and returns false.
+ * durations: signed us, +high/-low,
  * starting on a mark. `fm` selects the protocol set by modulation (as Flipper
  * registers protocols per-modulation): false = AM/OOK (Princeton, Linear,
  * Holtek, Gate-TX, CAME, Nice FLO), true = FM/2FSK (Ansonic). This keeps the

@@ -17,24 +17,12 @@
 #include "ir_db.h"
 #include "ir_store.h"
 
-/* Universal-sweep cadence. The gap is applied once per code and is kept short
- * so the whole "blast every brand" sweep stays fast (Flipper paces ~one signal
- * per 100 ms tick with the send overlapping the period). */
-#define IR_UNIV_GAP_MS   30
+/* Unleashed schedules one universal candidate per 100 ms UI tick. Pace by
+ * start-to-start interval: short frames wait for the next slot; long frames
+ * naturally occupy the slot without an extra delay. */
+#define IR_UNIV_PERIOD_US 100000
 #define IR_EMIT_GAP_MS   130
-/* A raw array may bundle several captured frames separated by long idle gaps
- * (20–116 ms, some up to 1.5 s). For the universal sweep we transmit only the
- * first clean frame: a space longer than this ends the frame. 25 ms clears
- * normal within-frame spaces (incl. AC two-part commands, whose split is
- * typically < 20 ms) while catching inter-frame / dead-air gaps. */
-#define IR_UNIV_FRAME_GAP_US 25000
-/* Minimum timings a truncated frame must keep (header + a few bits) before we
- * trust the cut; otherwise send the array whole. */
-#define IR_UNIV_MIN_FRAME    8
-/* Clean-frame repeats per RAW code (Flipper sends raw once), and the short,
- * controlled silence inserted between any repeated frames — parsed Sony uses
- * 3 frames (see ir_proto_min_repeats). Tune these for reliability vs speed. */
-#define IR_UNIV_RAW_REPEATS  1
+/* Fallback gap for parsed protocols without a protocol-specific repeat period. */
 #define IR_UNIV_REPEAT_GAP_US 20000
 #define IR_SPEC_BINS     48
 #define IR_CAPTURE_HISTORY_MAX 40
@@ -75,6 +63,9 @@ static portMUX_TYPE s_tx_state_mux = portMUX_INITIALIZER_UNLOCKED;
 /* Universal job params. */
 static ir_cat_t s_univ_cat;
 static char     s_univ_btn[24];
+/* Flipper toggles these on each parsed message. */
+static bool s_rc5_toggle;
+static bool s_rc6_toggle;
 
 /* Emulate job params. */
 static char s_emit_name[IR_NAME_MAX + 1];
@@ -276,21 +267,6 @@ void ir_spectrum_set(bool on)
     io_log(on ? "ir_spec: ON\r\n" : "ir_spec: OFF\r\n");
 }
 
-/* Length of the first clean frame in a raw timing array: the number of
- * leading timings up to (not including) the first inter-frame gap — a space
- * (odd index) longer than IR_UNIV_FRAME_GAP_US. Returns the full length when
- * no such gap exists (a genuine single-frame signal, e.g. most AC codes) or
- * when the cut would be implausibly short. The result ends on a mark. */
-static size_t ir_raw_first_frame(const uint32_t *d, size_t n)
-{
-    for (size_t i = 1; i < n; i += 2) {   /* spaces live at odd indices */
-        if (d[i] > IR_UNIV_FRAME_GAP_US) {
-            return (i >= IR_UNIV_MIN_FRAME) ? i : n;
-        }
-    }
-    return n;
-}
-
 /* ------------------------------------------------------------------
  * TX worker (universal sweep / emulate loop)
  * ------------------------------------------------------------------ */
@@ -350,53 +326,87 @@ static void tx_task(void *arg)
         size_t db_cursor = 0;
         for (int i = 0; i < total && !s_tx_stop; i++) {
             const ir_db_entry_t *e = ir_db_next(s_univ_cat, s_univ_btn, &db_cursor);
-            if (!e) break;   /* ir_db_next yields exactly `total` matches */
+            if (!e) {
+                failed += total - i;
+                io_log("ir: DB cursor ended early at %d/%d; counted remaining entries as failed\r\n",
+                       i, total);
+                break;
+            }
+            int64_t tx_start_us = esp_timer_get_time();
             esp_err_t err;
+            size_t raw_sent_count = 0;
+            uint64_t raw_total_us = 0;
             if (e->proto == IR_PROTO_RAW && e->raw && e->raw_len) {
-                /* Send only the first clean frame (drops captured inter-frame
-                 * dead air), repeated a controlled number of times. AC is
-                 * exempt: its codes are whole-state commands that may span two
-                 * parts split by a >25 ms gap, so truncating could cut a
-                 * command in half — send AC raw signals whole. */
-                size_t flen = (s_univ_cat == IR_CAT_AC)
-                                  ? e->raw_len
-                                  : ir_raw_first_frame(e->raw, e->raw_len);
-                err = ir_rmt_send_raw32_repeat(
-                    e->raw, flen,
+                /* Preserve the source capture. Long spaces can separate required
+                 * repeats or parts of a command; Unleashed sends the whole RAW. */
+                raw_sent_count = e->raw_len;
+                for (size_t j = 0; j < e->raw_len; j++) {
+                    raw_total_us += e->raw[j];
+                }
+                err = ir_rmt_send_raw32(
+                    e->raw, e->raw_len,
                     e->carrier ? e->carrier : 38000,
-                    e->duty > 0.0f ? e->duty : 0.33f,
-                    IR_UNIV_RAW_REPEATS, IR_UNIV_REPEAT_GAP_US);
+                    e->duty > 0.0f ? e->duty : 0.33f);
             } else {
                 ir_message_t m = {
                     .proto = e->proto, .address = e->address,
                     .command = e->command, .bits = e->bits,
                 };
+                if (e->proto == IR_PROTO_RC5) {
+                    m.toggle = s_rc5_toggle;
+                    s_rc5_toggle = !s_rc5_toggle;
+                } else if (e->proto == IR_PROTO_RC6) {
+                    m.toggle = s_rc6_toggle;
+                    s_rc6_toggle = !s_rc6_toggle;
+                }
                 uint16_t buf[IR_ENCODE_MAX_TIMINGS];
                 uint32_t carrier = 38000;
                 float duty = 0.33f;
                 size_t n = ir_encode(&m, buf, IR_ENCODE_MAX_TIMINGS,
                                      &carrier, &duty);
+                uint32_t repeat_gap_us = IR_UNIV_REPEAT_GAP_US;
+                if (e->proto == IR_PROTO_PIONEER) {
+                    repeat_gap_us = 26000;
+                } else if (e->proto == IR_PROTO_SONY && n > 0) {
+                    uint64_t frame_us = 0;
+                    for (size_t j = 0; j < n; j++) frame_us += buf[j];
+                    repeat_gap_us = frame_us < 45000
+                                        ? (uint32_t)(45000 - frame_us)
+                                        : 0;
+                }
                 err = n == 0
                     ? ESP_ERR_NOT_SUPPORTED
                     : ir_rmt_send_repeat(buf, n, carrier, duty,
                                          ir_proto_min_repeats(e->proto),
-                                         IR_UNIV_REPEAT_GAP_US);
+                                         repeat_gap_us);
             }
             int64_t tx_time_us = esp_timer_get_time();
             if (err == ESP_OK) {
                 sent++;
-                io_log("ir: TX i=%d/%d t_us=%" PRId64 " brand=\"%s\" proto=%s\r\n",
+                io_log("ir: TX i=%d/%d t_us=%" PRId64 " brand=\"%s\" proto=%s raw_n=%u raw_us=%" PRIu64 "\r\n",
                        i + 1, total, tx_time_us, e->brand ? e->brand : "?",
-                       ir_proto_name(e->proto));
+                       ir_proto_name(e->proto), (unsigned)raw_sent_count,
+                       raw_total_us);
             } else {
                 failed++;
-                io_log("ir: TX_FAIL i=%d/%d t_us=%" PRId64 " brand=\"%s\" err=%d\r\n",
+                io_log("ir: TX_FAIL i=%d/%d t_us=%" PRId64 " brand=\"%s\" err=%d raw_n=%u raw_us=%" PRIu64 "\r\n",
                        i + 1, total, tx_time_us, e->brand ? e->brand : "?",
-                       (int)err);
+                       (int)err, (unsigned)raw_sent_count, raw_total_us);
             }
-            /* Short fixed gap between codes; the loop top checks s_tx_stop so
-             * worst-case stop latency is one gap. */
-            if (!s_tx_stop) vTaskDelay(pdMS_TO_TICKS(IR_UNIV_GAP_MS));
+            /* Match Flipper's 100 ms candidate cadence without adding a full
+             * period after long frames. */
+            if (!s_tx_stop) {
+                uint64_t elapsed_us = (uint64_t)(tx_time_us - tx_start_us);
+                if (elapsed_us < IR_UNIV_PERIOD_US) {
+                    uint32_t wait_ms = (uint32_t)(
+                        (IR_UNIV_PERIOD_US - elapsed_us + 999ULL) / 1000ULL);
+                    if (wait_ms > 0) {
+                        TickType_t wait_ticks = pdMS_TO_TICKS(wait_ms);
+                        if (wait_ticks == 0) wait_ticks = 1;
+                        vTaskDelay(wait_ticks);
+                    }
+                }
+            }
         }
         taskENTER_CRITICAL(&s_tx_state_mux);
         s_tx_finishing = true;

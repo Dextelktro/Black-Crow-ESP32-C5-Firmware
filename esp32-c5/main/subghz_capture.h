@@ -17,7 +17,7 @@
  *
  * Memory discipline: the RMT ping-pong symbol buffers live in internal RAM
  * (DMA/ISR reachable) and are allocated on start / freed on stop; the flattened
- * duration buffer lives in PSRAM (task-only). An RMT RX channel on GPIO24 is
+ * duration buffer lives in PSRAM (task-only). An RMT RX channel on GPIO26 is
  * allocated lazily on start and deleted on stop (IR and Sub-GHz are mutually
  * exclusive edge features, so the one spare RX channel is shared over time).
  * ============================================================ */

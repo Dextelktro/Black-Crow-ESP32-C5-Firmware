@@ -14,25 +14,6 @@ from pathlib import Path
 MAX_RAW_TIMINGS = 1024
 MAX_RMT_SYMBOLS = 512
 MAX_RMT_DURATION_US = 32767
-# A space longer than this ends a frame; raw universal signals keep only their
-# first clean frame so the sweep never replays captured inter-frame dead air.
-# Mirrors IR_UNIV_FRAME_GAP_US in ir.c. The firmware also truncates at runtime,
-# so this is forward hygiene (and smaller flash) for regenerated tables.
-FRAME_GAP_US = 25000
-MIN_FRAME_TIMINGS = 8
-
-
-def first_frame(timings: tuple[int, ...]) -> tuple[int, ...]:
-    """Leading timings up to (not including) the first inter-frame gap.
-
-    Spaces live at odd indices; a space > FRAME_GAP_US marks the end of the
-    first frame. Returns the whole signal when there is no such gap (a genuine
-    single-frame code, e.g. most AC) or when the cut would be implausibly short.
-    """
-    for i in range(1, len(timings), 2):
-        if timings[i] > FRAME_GAP_US:
-            return timings[:i] if i >= MIN_FRAME_TIMINGS else timings
-    return timings
 
 
 @dataclass
@@ -193,14 +174,12 @@ def parse_categories(
                     duty = float(fields["duty_cycle"])
                 except (KeyError, ValueError) as error:
                     raise ValueError(f"{path}:{record.line}: incomplete RAW signal") from error
-                if not timings or len(timings) > MAX_RAW_TIMINGS or any(value <= 0 for value in timings):
-                    raise ValueError(f"{path}:{record.line}: invalid RAW timing count/value")
-                # Keep only the first clean frame (drop captured repeats / dead air).
-                # AC is exempt: its whole-state commands can legitimately span
-                # two parts split by a >25 ms gap, so cutting could break them
-                # (matches the runtime exemption in ir.c).
-                if slug != "ac":
-                    timings = first_frame(timings)
+            if not timings or len(timings) > MAX_RAW_TIMINGS or any(
+                value <= 0 or value > 0xFFFFFFFF for value in timings
+            ):
+                raise ValueError(f"{path}:{record.line}: invalid RAW timing count/value")
+                # Preserve the complete source timing list. Inter-frame spaces
+                # can separate required repeats or meaningful command parts.
                 if not 1 <= carrier <= 0xFFFF:
                     raise ValueError(f"{path}:{record.line}: carrier does not fit the firmware table")
                 if not 0.0 < duty < 1.0:

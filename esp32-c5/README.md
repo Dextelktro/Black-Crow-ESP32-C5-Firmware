@@ -136,7 +136,7 @@ espflash mkdir <lfs|sd> <path> create an upload directory
 espflash upload <lfs|sd> <path> <size> <crc32-hex>
 espflash data <id> <offset> <hex> | finish <id> | cancel <id>
 espflash cancel-active         remove the current incomplete upload
-espflash boot | release       assert or release target BOOT (GPIO10)
+espflash boot | release       assert or release target BOOT (GPIO23)
 espflash reset                reports unsupported while RESET is -1
 cc1101 status | sleep | wake  CC1101 presence and low-power control
 reset                         soft-reset the chip (esp_restart)
@@ -145,7 +145,7 @@ reset                         soft-reset the chip (esp_restart)
 ### UART ESP flasher
 
 The optional serial flasher uses UART1 (host TX GPIO25, host RX GPIO3), target
-BOOT GPIO10, and no automatic RESET line (`-1`). Cross target TX/RX and share
+BOOT GPIO23, and no automatic RESET line (`-1`). Cross target TX/RX and share
 ground: host GPIO25 TX -> target UART RX, host GPIO3 RX <- target UART TX.
 Use 3.3 V UART logic. These GPIO assignments must be checked against the exact
 board revision's schematic before wiring. UART0/USB-Serial-JTAG is not claimed;
@@ -222,7 +222,12 @@ clocks reaching a card that has not entered SPI mode.
 | SCK / MISO / MOSI | 6 / 2 / 7 | Shared bus |
 | SD CS / card detect (CD) | 1 / 0 | Up to 20 MHz |
 | nRF24 CSN / CE | 9 / 8 | 4 MHz |
-| CC1101 CS / GDO0 | 23 / 24 | 2 MHz |
+| CC1101 CS / GDO0 | 10 / 26 | 2 MHz |
+
+GPIO26 is an ESP32-C5 boot-mode strapping pin sampled during reset. If CC1101
+GDO0 drives GPIO26 during reset, the board may enter a different boot mode.
+Confirm the module leaves GDO0 high-impedance through reset and verify cold
+boot with the CC1101 connected.
 
 CD is active-low and uses an ESP internal pull-up. Confirm the card socket's
 CD switch is wired to ground when a card is inserted. The SD card's CMD and
@@ -263,8 +268,10 @@ Wire a 38 kHz IR front-end to 3.3 V logic:
   and unchanged. AC, Projector, LED, Fan, and Audio libraries are converted
   from their Flipper `.ir` assets into separate per-category entry and RAW
   includes; a category's data stays in its own pair of files. Parsed protocols
-  are encoded on the fly, and RAW timings retain their source carrier and duty
-  cycle. Long durations are split
+  are encoded on the fly, and RAW timings retain their complete source timing
+  list, carrier, and duty cycle, including captured repeats and inter-frame
+  gaps. Captures made while holding a button can therefore slow RAW sweeps.
+  Long durations are split
   across RMT symbols, and the TX buffer accommodates the longest supplied fan
   signal.
 

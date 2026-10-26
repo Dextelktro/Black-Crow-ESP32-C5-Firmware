@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -29,11 +30,8 @@
 #define IR_RX_MIN_NS       2000         /* ignore < 2 us glitches      */
 #define IR_RX_MAX_NS       12000000     /* > 12 ms gap ends a burst    */
 #define IR_TX_END_GAP_US   4000         /* trailing idle after an odd mark */
-#define IR_TX_WAIT_TIMEOUT_MS 3000      /* bound TX completion so a stalled
-                                         * transfer can never wedge the task;
-                                         * 3 s matches the known-good pre-
-                                         * regression bound and clears the
-                                         * longest real capture (<< 3 s) */
+#define IR_TX_WAIT_TIMEOUT_MS 3000      /* minimum wait bound for short TX frames */
+#define IR_TX_WAIT_MARGIN_MS  1000      /* extra time for encoder/refill scheduling */
 
 static const char *TAG = "ir_rmt";
 
@@ -51,6 +49,9 @@ static int s_rx_gpio = -1;
 static uint32_t s_tx_carrier_hz = 0;
 static float    s_tx_duty = 0.0f;
 static bool     s_tx_enabled = false;
+/* If a failed RMT stop cannot prove that s_tx_sym is no longer in use, refuse
+ * future sends instead of overwriting a buffer that may still be on the wire. */
+static bool     s_tx_faulted = false;
 
 /* RX plumbing. */
 static TaskHandle_t  s_rx_task = NULL;
@@ -153,9 +154,9 @@ static bool sym_push(size_t *run, uint8_t level, uint32_t v)
 
 /* Build symbols from an alternating duration list (mark first). Either `d16`
  * or `d32` is non-NULL. The frame is emitted `repeats` times (>=1), with
- * `gap_us` of trailing silence between consecutive frames (never after the
- * last) — this is how the universal sweep keeps multi-frame devices reliable
- * with a short controlled gap instead of replaying captured dead air.
+ * `gap_us` of trailing silence between consecutive parsed frames (never after
+ * the last). RAW signals bypass this repeat path and retain their captured
+ * inter-frame timing exactly.
  * Durations longer than one 15-bit RMT symbol field (32767 us @1 MHz) are
  * split into several same-level runs. Returns the symbol count; guarantees an
  * even run count so the final symbol never carries a 0-duration slot (which
@@ -185,6 +186,23 @@ static size_t build_symbols(const uint16_t *d16, const uint32_t *d32,
     return run / 2;
 }
 
+/* RMT runs at 1 MHz, so the built symbol durations are microseconds. Base the
+ * wait deadline on the actual transaction rather than assuming every IR frame
+ * is shorter than a fixed three-second ceiling. */
+static int tx_wait_timeout_ms(size_t symbol_count)
+{
+    uint64_t duration_us = 0;
+    for (size_t i = 0; i < symbol_count; i++) {
+        duration_us += s_tx_sym[i].duration0;
+        duration_us += s_tx_sym[i].duration1;
+    }
+
+    uint64_t timeout_ms = (duration_us + 999ULL) / 1000ULL + IR_TX_WAIT_MARGIN_MS;
+    if (timeout_ms < IR_TX_WAIT_TIMEOUT_MS) timeout_ms = IR_TX_WAIT_TIMEOUT_MS;
+    if (timeout_ms > INT_MAX) timeout_ms = INT_MAX;
+    return (int)timeout_ms;
+}
+
 static esp_err_t tx_send(const uint16_t *d16, const uint32_t *d32, size_t count,
                          uint32_t carrier_hz, float duty,
                          int repeats, uint32_t gap_us)
@@ -200,6 +218,11 @@ static esp_err_t tx_send(const uint16_t *d16, const uint32_t *d32, size_t count,
     esp_err_t err;
     if (!s_ready) {
         err = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
+    if (s_tx_faulted) {
+        err = ESP_ERR_INVALID_STATE;
+        io_log("ir: tx channel faulted; refusing to reuse the RMT payload buffer\r\n");
         goto done;
     }
 
@@ -222,7 +245,23 @@ static esp_err_t tx_send(const uint16_t *d16, const uint32_t *d32, size_t count,
         /* The copy encoder reads s_tx_sym incrementally; keep it immutable
          * until TX completes. Bounded wait: a stalled transfer returns
          * ESP_ERR_TIMEOUT instead of hanging the task (and the mutex) forever. */
-        err = rmt_tx_wait_all_done(s_tx_chan, IR_TX_WAIT_TIMEOUT_MS);
+        const int timeout_ms = tx_wait_timeout_ms(nsym);
+        err = rmt_tx_wait_all_done(s_tx_chan, timeout_ms);
+        if (err != ESP_OK) {
+            /* A wait timeout does not cancel the transaction. Stop the channel
+             * before releasing the mutex, because the copy encoder may still
+             * be reading s_tx_sym. */
+            esp_err_t stop_err = rmt_disable(s_tx_chan);
+            if (stop_err == ESP_OK || stop_err == ESP_ERR_INVALID_STATE) {
+                s_tx_enabled = false;
+            } else {
+                s_tx_faulted = true;
+                io_log("ir: tx abort failed (%s); channel locked out\r\n",
+                       esp_err_to_name(stop_err));
+            }
+            io_log("ir: tx wait failed (%s) after %d ms\r\n",
+                   esp_err_to_name(err), timeout_ms);
+        }
     }
 
 done:
@@ -536,6 +575,7 @@ static esp_err_t ir_rmt_init_abort(esp_err_t cause)
     s_tx_gpio = -1;
     s_rx_gpio = -1;
     s_ready = false;
+    s_tx_faulted = false;
     return cause;
 }
 

@@ -1,6 +1,57 @@
 #include "subghz_protocol.h"
 
+#include <limits.h>
+#include <string.h>
 #include <strings.h>
+
+#include "subghz_capture.h"
+
+/* Supported protocol pulse legs are at least 320 us. This software-only
+ * decoder cleanup can therefore repair isolated sub-50 us spikes without
+ * changing the RAW waveform retained for inspection or saving. */
+#define SUBGHZ_DECODE_GLITCH_US 50
+
+static int32_t s_decode_durations[SUBGHZ_RAW_MAX_TIMINGS];
+
+static uint64_t duration_magnitude(int32_t duration)
+{
+    return duration < 0 ? (uint64_t)(-(int64_t)duration) : (uint64_t)duration;
+}
+
+static bool remove_short_glitches(const int32_t *durations, size_t count,
+                                  int32_t *out, size_t *out_count)
+{
+    if (count > SUBGHZ_RAW_MAX_TIMINGS) return false;
+    memcpy(out, durations, count * sizeof(*out));
+
+    size_t n = count;
+    for (size_t i = 1; i + 1 < n;) {
+        int32_t before = out[i - 1];
+        int32_t glitch = out[i];
+        int32_t after = out[i + 1];
+        uint64_t before_us = duration_magnitude(before);
+        uint64_t glitch_us = duration_magnitude(glitch);
+        uint64_t after_us = duration_magnitude(after);
+
+        if (glitch_us < SUBGHZ_DECODE_GLITCH_US &&
+            before_us >= SUBGHZ_DECODE_GLITCH_US &&
+            after_us >= SUBGHZ_DECODE_GLITCH_US &&
+            ((before < 0) == (after < 0)) &&
+            ((before < 0) != (glitch < 0))) {
+            uint64_t merged_us = before_us + glitch_us + after_us;
+            if (merged_us > INT32_MAX) return false;
+
+            out[i - 1] = before < 0 ? -(int32_t)merged_us : (int32_t)merged_us;
+            memmove(&out[i], &out[i + 2], (n - i - 2) * sizeof(*out));
+            n -= 2;
+            if (i > 1) i--;
+        } else {
+            i++;
+        }
+    }
+    *out_count = n;
+    return true;
+}
 
 /* Faithful constants from Flipper Zero Sub-GHz protocol sources (dev branch).
  * te_short/te_long in microseconds; deltas are the decoder match tolerances. */
@@ -173,6 +224,7 @@ static bool decode_princeton(const int32_t *d, size_t count,
     uint64_t data = 0;
     int bits = 0;
     uint64_t total = 0;
+    uint32_t te_ref = 0;   /* FIX: short-leg referensi dari pair pertama */
     size_t i = 0;
     while (i + 1 < count && bits < PRINCETON_BITS) {
         int32_t high = d[i], low = d[i + 1];
@@ -180,14 +232,19 @@ static bool decode_princeton(const int32_t *d, size_t count,
         uint32_t ha = (uint32_t)high, la = (uint32_t)(-low);
         uint32_t mn = ha < la ? ha : la;
         uint32_t mx = ha < la ? la : ha;
-        /* Discriminate by the 3:1 RATIO, not loose absolute windows: without
-         * Flipper's preamble as a gate, absolute windows would let a 2:1
-         * protocol (CAME/Nice/Holtek) satisfy 24 Princeton bits and be
-         * misclassified. Require the long leg ~2.33x..4x the short (3:1), and a
-         * plausible short-pulse Te. */
         if (mn < 80 || mn > 2000) break;
         if (mx < mn * 2 + mn / 3 || mx > mn * 4) break;
-        int bit = (ha > la) ? 1 : 0;   /* long-high = 1, short-high = 0 */
+        /* FIX: tolak drift Te >33% antar-pair. Remote asli stabil dalam satu
+         * frame (~37ms); noise acak biasanya tidak. Sebelumnya mn divalidasi
+         * lepas [80,2000]us per-pair tanpa kaitan satu sama lain, jadi noise
+         * bisa lolos 24 pair dan ke-decode jadi "Princeton" palsu. */
+        if (te_ref == 0) {
+            te_ref = mn;
+        } else {
+            uint32_t tol = te_ref / 3;
+            if (mn > te_ref + tol || mn < te_ref - tol) break;
+        }
+        int bit = (ha > la) ? 1 : 0;
         data = (data << 1) | (uint64_t)bit;
         total += ha + la;
         bits++;
@@ -196,7 +253,7 @@ static bool decode_princeton(const int32_t *d, size_t count,
     if (bits != PRINCETON_BITS) return false;
     *out_data = data & 0xFFFFFFULL;
     *out_bits = PRINCETON_BITS;
-    *out_te = (uint32_t)(total / (PRINCETON_BITS * 4));   /* each bit = 4 Te */
+    *out_te = (uint32_t)(total / (PRINCETON_BITS * 4));
     return true;
 }
 
@@ -316,6 +373,15 @@ bool subghz_protocol_decode(const int32_t *durations, size_t count, bool fm,
 {
     if (out) { out->proto = SUBGHZ_PROTO_UNKNOWN; out->key = 0; out->bits = 0; out->te = 0; }
     if (!durations || count < 3 || !out) return false;
+
+    size_t filtered_count = 0;
+    if (!remove_short_glitches(durations, count, s_decode_durations,
+                               &filtered_count)) {
+        return false;
+    }
+    durations = s_decode_durations;
+    count = filtered_count;
+    if (count < 3) return false;
 
     uint64_t data = 0;
     int bits = 0;

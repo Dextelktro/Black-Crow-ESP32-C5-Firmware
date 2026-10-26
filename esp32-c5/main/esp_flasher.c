@@ -19,7 +19,7 @@
 #define FLASHER_UART_PORT       UART_NUM_1
 #define FLASHER_UART_TX_GPIO    GPIO_NUM_25
 #define FLASHER_UART_RX_GPIO    GPIO_NUM_3
-#define FLASHER_BOOT_GPIO       GPIO_NUM_10
+#define FLASHER_BOOT_GPIO       GPIO_NUM_23
 #define FLASHER_RESET_GPIO      (-1)
 #define FLASHER_UART_RX_BUFFER  2048
 #define FLASHER_FLASH_BLOCK    1024
@@ -43,6 +43,7 @@ typedef struct {
 
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_busy;
+static bool s_manual_boot_active;   /* BARU: klaim exklusif BOOT pin manual, dilindungi s_state_lock sama seperti s_busy — mencegah esp_flasher_batch_start() dan esp_flasher_enter_bootloader() menyentuh FLASHER_BOOT_GPIO bersamaan */
 static bool s_cancel_requested;
 static esp_flasher_result_t s_flash_result;
 static uint32_t s_flash_programmed;
@@ -103,9 +104,13 @@ static void release_uart_pins(void)
         s_port_cleanup_failed = true;
         flasher_log("UART GPIO release failed: TX=%s RX=%s",
                     esp_err_to_name(tx_err), esp_err_to_name(rx_err));
-    } else {
-        s_uart_pins_configured = false;
     }
+    /* FIX: clear di luar if — sebelumnya cuma di-clear kalau SUKSES, jadi
+     * sekali gpio_reset_pin gagal, s_uart_pins_configured nyangkut true
+     * selamanya walau percobaan berikutnya sukses. gpio_reset_pin aman
+     * dipanggil ulang, jadi tidak ada resource leak nyata; ini murni soal
+     * state bookkeeping tetap akurat untuk diagnosa. */
+    s_uart_pins_configured = false;
 }
 
 static bool valid_relative_path(const char *path)
@@ -794,7 +799,7 @@ esp_err_t esp_flasher_batch_add_image(
 esp_err_t esp_flasher_batch_start(void)
 {
     portENTER_CRITICAL(&s_state_lock);
-    if (s_busy || !s_batch_staging ||
+    if (s_busy || !s_batch_staging || s_manual_boot_active ||   /* FIX: tolak kalau BOOT sedang dipegang manual */
         s_staged_image_count != s_staged_batch.image_count ||
         esp_upload_is_busy()) {
         portEXIT_CRITICAL(&s_state_lock);
@@ -918,9 +923,20 @@ esp_err_t esp_flasher_reset_target(void)
 
 esp_err_t esp_flasher_enter_bootloader(void)
 {
-    if (esp_flasher_is_busy() || esp_upload_is_busy()) {
+    /* FIX: klaim s_manual_boot_active DI DALAM lock, bersamaan dengan cek
+     * s_busy/esp_upload_is_busy() — menutup celah race yang sebelumnya ada
+     * antara "cek tidak busy" dan "mulai sentuh GPIO" (lihat pembahasan
+     * sebelumnya). esp_upload_is_busy() aman dipanggil di sini karena dia
+     * tidak mengambil lock apa pun di dalamnya (cuma baca bool), sama
+     * seperti yang sudah dilakukan esp_flasher_batch_begin()/batch_start(). */
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_busy || s_manual_boot_active || esp_upload_is_busy()) {
+        portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
+    s_manual_boot_active = true;
+    portEXIT_CRITICAL(&s_state_lock);
+
     gpio_config_t config = {
         .pin_bit_mask = 1ULL << FLASHER_BOOT_GPIO,
         .mode = GPIO_MODE_OUTPUT_OD,
@@ -949,6 +965,11 @@ esp_err_t esp_flasher_enter_bootloader(void)
             set_boot_asserted(false);
         }
         flasher_log("could not assert BOOT: %s", esp_err_to_name(err));
+        /* FIX: gagal total — lepas klaim supaya bisa dicoba lagi, bukan macet
+         * permanen menganggap BOOT masih "dipegang" padahal gagal di-assert. */
+        portENTER_CRITICAL(&s_state_lock);
+        s_manual_boot_active = false;
+        portEXIT_CRITICAL(&s_state_lock);
     }
     return err;
 }
@@ -974,5 +995,11 @@ esp_err_t esp_flasher_release_boot(void)
     if (err != ESP_OK) {
         flasher_log("could not release BOOT: %s", esp_err_to_name(err));
     }
+    /* FIX: lepas klaim di jalur manapun (sukses atau gagal) — supaya
+     * esp_flasher_batch_start() bisa jalan lagi setelah ini, dan supaya
+     * esp_flasher_enter_bootloader() berikutnya tidak ditolak permanen. */
+    portENTER_CRITICAL(&s_state_lock);
+    s_manual_boot_active = false;
+    portEXIT_CRITICAL(&s_state_lock);
     return err;
 }

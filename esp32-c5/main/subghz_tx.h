@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -23,9 +24,11 @@
  * (ISR reads it without depending on the PSRAM cache) and freed on end(); the
  * GPTimer + semaphore live only between begin() and end().
  *
- * Caller contract (done by the Sub-GHz worker): apply the OOK preset + set the
- * frequency over SPI, subghz_tx_begin(), strobe STX, subghz_tx_send() one or
- * more times, strobe SIDLE, subghz_tx_end().
+ * Caller contract (done by the Sub-GHz worker): apply the radio preset + set
+ * and verify the frequency over SPI, subghz_tx_begin(), strobe STX,
+ * subghz_tx_send() one or more times, leave TX with SIDLE/SPWD, then call
+ * subghz_tx_end(release_gpio) with release allowed only after radio shutdown
+ * succeeds.
  * ============================================================ */
 
 /* Set up the GPIO (as output, low), GPTimer and completion semaphore. */
@@ -36,9 +39,12 @@ esp_err_t subghz_tx_begin(int gpio_num);
  * ESP_ERR_TIMEOUT if the frame does not complete in time. */
 esp_err_t subghz_tx_send(const int32_t *durations, size_t count);
 
-/* Tear down: delete the GPTimer + semaphore, free the buffer, return the GPIO
- * to input. Safe to call even if begin() partially failed. */
-void subghz_tx_end(void);
+/* Abort the active frame and prevent any later frame until end()/begin(). */
+esp_err_t subghz_tx_cancel(void);
+
+/* Tear down timer resources and force GDO0 low. Release the pin only after the
+ * caller confirms that the CC1101 has left TX; otherwise keep it driven low. */
+void subghz_tx_end(bool release_gpio);
 
 /* Worst ISR lateness (us) observed since begin() — a self-measured jitter
  * indicator (no external instrument needed). */

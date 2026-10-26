@@ -14,13 +14,13 @@
 
 #include "io.h"
 
-#define SUBGHZ_GDO0_GPIO        24
+#define SUBGHZ_GDO0_GPIO        26
 #define SUBGHZ_RX_RESOLUTION_HZ 1000000     /* 1 tick = 1 us (see static assert) */
-#define SUBGHZ_RX_MEM_SYMBOLS   64          /* channel memory block (>=48, even) */
+#define SUBGHZ_RX_MEM_SYMBOLS   48          /* channel memory block (>=48, even) */
 #define SUBGHZ_RX_BUF_SYMBOLS   512         /* up to 1024 edges per burst */
 #define SUBGHZ_RX_BUFFER_COUNT  2
-#define SUBGHZ_RX_MIN_NS        50000       /* < 50 us treated as glitch, dropped */
-#define SUBGHZ_RX_MIN_EDGES     8           /* shorter frames are noise fragments */
+#define SUBGHZ_RX_MIN_NS        3000       /* C5 APB filter limit is < 3187 ns */
+#define SUBGHZ_RX_MIN_EDGES     16           /* shorter frames are noise fragments */
 
 /* --- Capture boundary: two SEPARATE concepts (Stage 7 Part C) ---------------
  * The RMT peripheral ends a reception when any single level (HIGH or LOW)

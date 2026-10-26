@@ -15,6 +15,7 @@
 #include "sd_storage.h"
 #include "radio_modules.h"
 #include "spi_shared_bus.h"
+#include "cc1101.h"
 #include "monitor.h"
 #include "spectrum.h"
 #include "wifi_live_scan.h"
@@ -38,13 +39,16 @@ void app_main(void)
     io_init();
 
     esp_err_t spi_err = spi_shared_bus_init();
+    esp_err_t sd_err = ESP_ERR_INVALID_STATE;
+    esp_err_t radio_init_err = ESP_ERR_INVALID_STATE;
     bool spi_radios_safe = false;
+    bool radio_init_attempted = false;
+    bool sd_present = false;
+    bool sd_mounted = false;
+    bool sd_busy = false;
     if (spi_err == ESP_OK) {
         io_log("main: shared SPI bus ready\r\n");
-        esp_err_t sd_err = sd_storage_init();
-        bool sd_present = false;
-        bool sd_mounted = false;
-        bool sd_busy = false;
+        sd_err = sd_storage_init();
         sd_storage_get_state(&sd_present, &sd_mounted, &sd_busy,
                              &spi_radios_safe);
         if (sd_err == ESP_OK) {
@@ -61,7 +65,8 @@ void app_main(void)
     }
 
     if (spi_radios_safe) {
-        radio_modules_init();
+        radio_init_attempted = true;
+        radio_init_err = radio_modules_init();
     }
 
     targets_init();
@@ -72,6 +77,14 @@ void app_main(void)
     cli_init();
     transport_serial_init();
     io_log("main: serial up\r\n");
+    io_log("main: bootdiag spi=%s sd=%s present=%u mounted=%u busy=%u "
+           "radio_safe=%u radio_attempted=%u radio_result=%s "
+           "cc1101_present=%u\r\n",
+           esp_err_to_name(spi_err), esp_err_to_name(sd_err),
+           sd_present ? 1U : 0U, sd_mounted ? 1U : 0U, sd_busy ? 1U : 0U,
+           spi_radios_safe ? 1U : 0U, radio_init_attempted ? 1U : 0U,
+           esp_err_to_name(radio_init_err), cc1101_is_present() ? 1U : 0U);
+    radio_modules_log_status();
 
     if (transport_ble_init()) {
         io_log("main: ble initialized; advertising pending NimBLE sync\r\n");
