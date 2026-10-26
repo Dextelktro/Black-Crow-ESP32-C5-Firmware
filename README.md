@@ -113,7 +113,7 @@ BLE observations are not proof of device identity or anyone's location. Signal s
 
 ### Main board
 
-# This firmware now only supports ESP32 C5 N16R8, but maybe in the future it will support ESP32 C5 N8R4 or other RAM variants.
+### This firmware now only supports ESP32 C5 N16R8, but maybe in the future it will support ESP32 C5 N8R4 or other RAM variants.
 
 - **Board:** Espressif ESP32-C5-DevKitC-1.
 - **Module:** ESP32-C5-WROOM-1-N16R8 (16 MB flash, 8 MB quad-SPI PSRAM).
