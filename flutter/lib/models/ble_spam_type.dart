@@ -17,8 +17,9 @@ enum BleSpamType {
     icon: Icons.warning_amber_rounded,
     accent: Color(0xFFFF4040),
     defaultDelay: 20,
-    warnText: 'Sour Apple dapat memicu crash pada perangkat iOS 17 '
-        'yang belum dipatch. Gunakan hanya pada perangkat Anda sendiri.',
+    warnText:
+        'Sour Apple may crash unpatched iOS 17 devices. '
+        'Use only on devices you own or are authorized to test.',
   ),
   samsung(
     id: 'samsung',
@@ -54,8 +55,9 @@ enum BleSpamType {
     icon: Icons.home_outlined,
     accent: Color(0xFFFF6900),
     defaultDelay: 50,
-    warnText: 'Xiaomi MiBeacon memicu deteksi device di Mi Home, '
-        'bukan popup pairing seperti Apple / Google.',
+    warnText:
+        'Xiaomi MiBeacon triggers device detection in Mi Home; '
+        'it does not show a pairing prompt like Apple or Google.',
   ),
   android(
     id: 'android',

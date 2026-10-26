@@ -20,6 +20,6 @@ void main() {
     final api = ApiServer(settings)..dispose();
     await tester.pumpWidget(DeautherApp(settings: settings, api: api));
     await tester.pump();
-    expect(find.text('ESP32-C5 Deauther'), findsOneWidget);
+    expect(find.text('Black Crow'), findsOneWidget);
   });
 }

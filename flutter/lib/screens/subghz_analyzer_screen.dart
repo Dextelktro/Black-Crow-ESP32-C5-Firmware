@@ -6,8 +6,8 @@ import '../widgets/subghz_kit.dart';
 import '../widgets/waterfall.dart';
 import 'subghz_common.dart';
 
-/// Frequency Analyzer: hops a fixed list across every band and reports the
-/// strongest frequency it hears each cycle.
+/// Frequency Analyzer: scans representative frequencies and estimates each
+/// hit from a local RSSI peak.
 class SubghzAnalyzerScreen extends StatefulWidget {
   const SubghzAnalyzerScreen({super.key});
 
@@ -17,16 +17,27 @@ class SubghzAnalyzerScreen extends StatefulWidget {
 
 class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
   DeviceController? _ctrl;
+  bool _sessionPrepared = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _ctrl = context.read<DeviceController>();
+    if (!_sessionPrepared) {
+      _sessionPrepared = true;
+      _ctrl!.subghzResetAnalyzerSession();
+    }
   }
 
   @override
   void dispose() {
-    if (_ctrl?.subghzAnalyzerRunning ?? false) _ctrl!.subghzStop();
+    final ctrl = _ctrl;
+    if (ctrl != null) {
+      closeSubghzSessionOnExit(
+        ctrl.subghzCloseAnalyzerSession,
+        'Sub-GHz Frequency Analyzer',
+      );
+    }
     super.dispose();
   }
 
@@ -34,8 +45,10 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
   Widget build(BuildContext context) {
     final ctrl = context.watch<DeviceController>();
     final running = ctrl.subghzAnalyzerRunning;
-    final hasPeak = ctrl.subghzAnalyzerPeakHz > 0 && ctrl.subghzAnalyzerRssi > -128;
+    final hasPeak =
+        ctrl.subghzAnalyzerPeakHz > 0 && ctrl.subghzAnalyzerRssi > -128;
     final history = ctrl.subghzAnalyzerHistory;
+    final detections = ctrl.subghzAnalyzerDetections;
     final values = <double>[for (final r in history) sgRssiFraction(r)];
 
     return Scaffold(
@@ -65,7 +78,7 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
                       Row(
                         children: [
                           const Text(
-                            'STRONGEST FREQUENCY',
+                            'LATEST FREQUENCY ESTIMATE',
                             style: TextStyle(
                               color: Colors.white54,
                               fontSize: 11,
@@ -92,9 +105,7 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
                         inBand: true,
                       ),
                       const SizedBox(height: 14),
-                      _RssiBar(
-                        dbm: hasPeak ? ctrl.subghzAnalyzerRssi : -128,
-                      ),
+                      _RssiBar(dbm: hasPeak ? ctrl.subghzAnalyzerRssi : -128),
                     ],
                   ),
                 ),
@@ -121,6 +132,51 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
+                const SgSectionLabel('PREVIOUS DETECTIONS'),
+                SgPanel(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: detections.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Text(
+                            'No previous detections',
+                            style: TextStyle(color: Colors.white38),
+                          ),
+                        )
+                      : Column(
+                          children: [
+                            for (final detection in detections)
+                              ListTile(
+                                dense: true,
+                                visualDensity: VisualDensity.compact,
+                                leading: const Icon(
+                                  Icons.radio,
+                                  color: kSgAmber,
+                                  size: 18,
+                                ),
+                                title: Text(
+                                  '${sgMhz(detection.freqHz, decimals: 3)} MHz',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontFamily: 'monospace',
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  '${detection.rssi} dBm · '
+                                  '${detection.at.hour.toString().padLeft(2, '0')}:'
+                                  '${detection.at.minute.toString().padLeft(2, '0')}:'
+                                  '${detection.at.second.toString().padLeft(2, '0')}',
+                                  style: const TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                ),
+                const SizedBox(height: 16),
                 SgButton(
                   label: running ? 'STOP' : 'START ANALYZER',
                   icon: running ? Icons.stop : Icons.play_arrow,
@@ -130,10 +186,15 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  'The analyzer hops a fixed frequency list across all bands and '
-                  'reports the loudest each cycle. Hold a remote button down to '
-                  'pin its frequency, then set it in Radio Settings for Read.',
-                  style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.4),
+                  '25 kHz scan steps around representative candidates. Hold the '
+                  'transmitter active while scanning. RSSI peak is an estimate, '
+                  'not a calibrated carrier measurement; signals between '
+                  'candidates or close together may be missed or merged.',
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 11,
+                    height: 1.4,
+                  ),
                 ),
               ],
             ),
@@ -158,8 +219,10 @@ class _RssiBar extends StatelessWidget {
       children: [
         Row(
           children: [
-            const Text('RSSI',
-                style: TextStyle(color: Colors.white54, fontSize: 11)),
+            const Text(
+              'RSSI',
+              style: TextStyle(color: Colors.white54, fontSize: 11),
+            ),
             const Spacer(),
             Text(
               has ? '$dbm dBm' : '-- dBm',

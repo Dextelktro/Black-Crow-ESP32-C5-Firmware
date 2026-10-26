@@ -880,7 +880,7 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
           'Host UART: UART1\r\n'
           'Host TX: GPIO25 → target RX\r\n'
           'Host RX: GPIO3 ← target TX\r\n'
-          'Target BOOT: GPIO10 (open-drain)\r\n'
+          'Target BOOT: GPIO23 (open-drain)\r\n'
           'Target RESET: -1 (manual reset required)\r\n\r\n'
           'UART0/USB serial is not claimed by the flasher. The session checks '
           'that UART1 is unowned before install and deletes its driver when done. '
@@ -1218,8 +1218,8 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
                 ? 'Release target BOOT'
                 : 'Enter bootloader',
             subtitle: controller.espFlashBootAsserted
-                ? 'Release GPIO10 after manually resetting the target'
-                : 'Assert GPIO10; manually reset or power-cycle the target',
+                ? 'Release GPIO23 after manually resetting the target'
+                : 'Assert GPIO23; manually reset or power-cycle the target',
             onTap: () async {
               final operation = controller.espFlashBootAsserted
                   ? controller.espFlashReleaseBoot

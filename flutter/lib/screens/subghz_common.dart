@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -13,6 +15,19 @@ String timeAgo(DateTime at) {
   final m = s ~/ 60;
   if (m < 60) return '${m}m ago';
   return '${m ~/ 60}h ago';
+}
+
+void closeSubghzSessionOnExit(
+  Future<void> Function() closeSession,
+  String screenName,
+) {
+  unawaited(
+    closeSession().catchError((Object error, StackTrace stackTrace) {
+      debugPrint(
+        'Failed to close $screenName cleanly: $error\n$stackTrace',
+      );
+    }),
+  );
 }
 
 /// A dismissible one-line result banner driven by [DeviceController.subghzNotice]

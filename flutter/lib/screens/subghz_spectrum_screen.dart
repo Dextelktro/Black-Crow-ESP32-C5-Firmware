@@ -17,6 +17,7 @@ class SubghzSpectrumScreen extends StatefulWidget {
 
 class _SubghzSpectrumScreenState extends State<SubghzSpectrumScreen> {
   DeviceController? _ctrl;
+  bool _sessionPrepared = false;
   int _band = 4; // default to the 433 MHz region (firmware band index 4)
 
   // Fallback band labels if the firmware table hasn't arrived yet (help text).
@@ -34,11 +35,21 @@ class _SubghzSpectrumScreenState extends State<SubghzSpectrumScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _ctrl = context.read<DeviceController>();
+    if (!_sessionPrepared) {
+      _sessionPrepared = true;
+      _ctrl!.subghzResetSpectrumSession();
+    }
   }
 
   @override
   void dispose() {
-    if (_ctrl?.subghzSpectrumRunning ?? false) _ctrl!.subghzStop();
+    final ctrl = _ctrl;
+    if (ctrl != null) {
+      closeSubghzSessionOnExit(
+        ctrl.subghzCloseSpectrumSession,
+        'Sub-GHz Spectrum',
+      );
+    }
     super.dispose();
   }
 

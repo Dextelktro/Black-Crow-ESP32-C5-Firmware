@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -38,25 +36,6 @@ class HomeBody extends StatefulWidget {
 }
 
 class _HomeBodyState extends State<HomeBody> {
-  Timer? _ticker;
-  int _syncTick = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      if (mounted) {
-        setState(() => _syncTick = (_syncTick + 1) % 4);
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _ticker?.cancel();
-    super.dispose();
-  }
-
   String _fmtUptime(Duration d) {
     final h = d.inHours;
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
@@ -459,13 +438,12 @@ class _HomeBodyState extends State<HomeBody> {
         _ToolRow(
           icon: ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
           leadingWidget: ctrl.sdBusy
-              ? Transform.rotate(
-                  angle: _syncTick * 1.57079632679,
-                  child: const Icon(Icons.sync, color: Color(0xFF4FA8FF), size: 24),
-                )
+              ? const _SyncIndicator()
               : Icon(
                   ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
-                  color: ctrl.sdPresent ? const Color(0xFF4FA8FF) : Colors.amber,
+                  color: ctrl.sdPresent
+                      ? const Color(0xFF4FA8FF)
+                      : Colors.amber,
                   size: 24,
                 ),
           color: ctrl.sdPresent ? const Color(0xFF4FA8FF) : Colors.amber,
@@ -474,20 +452,21 @@ class _HomeBodyState extends State<HomeBody> {
               ? 'Synchronizing · ${ctrl.sdTransferSentBytes} bytes transferred'
               : ctrl.sdPresent
               ? ctrl.sdMounted
-                  ? '${_fmtBytes(ctrl.sdFree)} free / ${_fmtBytes(ctrl.sdTotal)} · tap to browse'
-                  : 'Card detected · tap to mount or inspect'
+                    ? '${_fmtBytes(ctrl.sdFree)} free / ${_fmtBytes(ctrl.sdTotal)} · tap to browse'
+                    : 'Card detected · tap to mount or inspect'
               : 'No card detected',
           onTap: () => _push(context, ctrl, const SdStorageScreen()),
         ),
         const SizedBox(height: 14),
-      _ToolRow(
-        icon: Icons.developer_board,
-        color: const Color(0xFF63F2CE),
-        title: 'Hardware Peripheral',
-        subtitle: 'Pin map ESP32-C5 · peripheral · pin kosong · boot warning',
-        onTap: () => _push(context, ctrl, const HardwarePeripheralScreen()),
-      ),
-      const SizedBox(height: 14),
+        _ToolRow(
+          icon: Icons.developer_board,
+          color: const Color(0xFF63F2CE),
+          title: 'Hardware Peripheral',
+          subtitle:
+              'ESP32-C5 pin map · peripherals · available GPIO · boot warnings',
+          onTap: () => _push(context, ctrl, const HardwarePeripheralScreen()),
+        ),
+        const SizedBox(height: 14),
         _ToolRow(
           icon: Icons.memory,
           color: const Color(0xFF2EE6C5),
@@ -533,9 +512,9 @@ class _HomeBodyState extends State<HomeBody> {
           child: Text(
             'RF TOOLS',
             style: TextStyle(
-              color: Colors.white38,
-              fontSize: 11,
-              letterSpacing: 2,
+              color: Color(0xFFB1C2BD),
+              fontSize: 12,
+              letterSpacing: 1.2,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -560,6 +539,7 @@ class _HomeBodyState extends State<HomeBody> {
           icon: Icons.bolt,
           color: Colors.red.shade400,
           title: 'Nuke',
+          active: ctrl.attacking && ctrl.attackMode == 'nuke',
           subtitle: ctrl.attacking && ctrl.attackMode == 'nuke'
               ? 'RUNNING · tap to manage or stop'
               : 'Launch the radar and manage its current operation',
@@ -570,6 +550,7 @@ class _HomeBodyState extends State<HomeBody> {
           icon: Icons.wifi_tethering,
           color: const Color(0xFFFF4800),
           title: 'Deauth All',
+          active: ctrl.attacking && ctrl.attackMode == 'deauthall',
           subtitle: ctrl.attacking && ctrl.attackMode == 'deauthall'
               ? 'RUNNING · tap to manage or stop'
               : 'Manage channel-hopping operation and rescan options',
@@ -580,6 +561,7 @@ class _HomeBodyState extends State<HomeBody> {
           icon: Icons.bluetooth,
           color: const Color(0xFF39FF14),
           title: 'BLE Spam',
+          active: ctrl.bleSpamRunning,
           subtitle: ctrl.bleSpamRunning
               ? 'RUNNING · ${ctrl.bleSpamType?.label ?? 'mode'}'
               : 'Choose and manage BLE advertising modes',
@@ -621,8 +603,8 @@ class _HomeBodyState extends State<HomeBody> {
         _ToolRow(
           icon: Icons.bluetooth_audio,
           color: const Color(0xFF00E5FF),
-          title: 'BLE Spectrum',
-          subtitle: 'Live BLE signal-strength spectrum',
+          title: 'Bluetooth Spectrum',
+          subtitle: 'Live nearby Bluetooth signal strength',
           onTap: () => _push(context, ctrl, const BleSpectrumScreen()),
         ),
         const SizedBox(height: 10),
@@ -646,11 +628,11 @@ class _HomeBodyState extends State<HomeBody> {
         const Padding(
           padding: EdgeInsets.only(left: 4, bottom: 8),
           child: Text(
-            '2.4 GHz RADIO · nRF24',
+            '2.4 GHz RADIO · nRF24 MODULE',
             style: TextStyle(
-              color: Colors.white38,
-              fontSize: 11,
-              letterSpacing: 2,
+              color: Color(0xFFB1C2BD),
+              fontSize: 12,
+              letterSpacing: 1.2,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -669,9 +651,9 @@ class _HomeBodyState extends State<HomeBody> {
           child: Text(
             'INFRARED · 38 kHz',
             style: TextStyle(
-              color: Colors.white38,
-              fontSize: 11,
-              letterSpacing: 2,
+              color: Color(0xFFB1C2BD),
+              fontSize: 12,
+              letterSpacing: 1.2,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -688,11 +670,11 @@ class _HomeBodyState extends State<HomeBody> {
         const Padding(
           padding: EdgeInsets.only(left: 4, bottom: 8),
           child: Text(
-            'SUB-GHZ · CC1101',
+            'SUB-GHZ RADIO · CC1101 MODULE',
             style: TextStyle(
-              color: Colors.white38,
-              fontSize: 11,
-              letterSpacing: 2,
+              color: Color(0xFFB1C2BD),
+              fontSize: 12,
+              letterSpacing: 1.2,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -763,17 +745,22 @@ class _TileCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(14);
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: radius,
         child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.03),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withValues(alpha: 0.35)),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0x1FFFFFFF), Color(0x0AFFFFFF)],
+            ),
+            borderRadius: radius,
+            border: Border.all(color: const Color(0xB0344640)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -797,12 +784,41 @@ class _TileCard extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                 subtitle,
-                style: const TextStyle(color: Colors.white54, fontSize: 11),
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _SyncIndicator extends StatefulWidget {
+  const _SyncIndicator();
+
+  @override
+  State<_SyncIndicator> createState() => _SyncIndicatorState();
+}
+
+class _SyncIndicatorState extends State<_SyncIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _controller,
+      child: const Icon(Icons.sync, color: Color(0xFF4FA8FF), size: 24),
     );
   }
 }
@@ -815,6 +831,7 @@ class _ToolRow extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.active = false,
   });
 
   final IconData icon;
@@ -823,20 +840,29 @@ class _ToolRow extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
+    final radius = BorderRadius.circular(14);
+    final outline = active
+        ? color.withValues(alpha: 0.78)
+        : const Color(0xB0344640);
     return Material(
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: radius,
         child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.03),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withValues(alpha: 0.3)),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0x1FFFFFFF), Color(0x0AFFFFFF)],
+            ),
+            borderRadius: radius,
+            border: Border.all(color: outline),
           ),
           child: Row(
             children: [
@@ -866,14 +892,17 @@ class _ToolRow extends StatelessWidget {
                     Text(
                       subtitle,
                       style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 11,
+                        color: Colors.white70,
+                        fontSize: 12,
                       ),
                     ),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right, color: color.withValues(alpha: 0.6)),
+              Icon(
+                Icons.chevron_right,
+                color: active ? color : const Color(0xFF91AAA4),
+              ),
             ],
           ),
         ),

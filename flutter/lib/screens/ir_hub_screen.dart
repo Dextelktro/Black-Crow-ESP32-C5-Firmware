@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
+import '../widgets/glass_surface.dart';
 import 'ir_receiver_screen.dart';
 import 'ir_saved_screen.dart';
 import 'ir_universal_screen.dart';
@@ -132,10 +133,7 @@ class _IrHero extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        border: Border.all(color: kIrAccent.withValues(alpha: 0.35)),
-        boxShadow: [
-          BoxShadow(color: kIrAccent.withValues(alpha: 0.12), blurRadius: 22),
-        ],
+        border: Border.all(color: glassNeutralBorder),
       ),
       child: Row(
         children: [
@@ -204,10 +202,9 @@ class _IrMenuCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         child: Container(
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.03),
+          decoration: glassSurfaceDecoration(
+            context,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withValues(alpha: 0.35)),
           ),
           child: Row(
             children: [

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/glass_surface.dart';
+
 const _kCanvas = Color(0xFF07110F);
 const _kPanel = Color(0xFF0D1D19);
 const _kMint = Color(0xFF63F2CE);
@@ -68,7 +70,7 @@ class HardwarePeripheralScreen extends StatelessWidget {
                 const SizedBox(height: 15),
                 const _SectionHeading(
                   eyebrow: 'AVAILABLE GPIO',
-                  title: 'Belum dipakai',
+                  title: 'Available pins',
                   index: '02',
                 ),
                 const SizedBox(height: 10),
@@ -77,23 +79,23 @@ class HardwarePeripheralScreen extends StatelessWidget {
                 const _CautionNote(
                   color: _kAmber,
                   icon: Icons.warning_amber_rounded,
-                  title: 'PERINGATAN BOOT / STRAPPING',
+                  title: 'BOOT / STRAPPING WARNING',
                   body:
-                      'GPIO2, GPIO3, GPIO7, GPIO25, GPIO26, GPIO27, dan GPIO28 '
-                      'mempengaruhi konfigurasi saat boot atau reset. Pin kosong '
-                      'GPIO3, GPIO25, GPIO26, dan GPIO28 perlu dijaga agar rangkaian '
-                      'eksternal tidak mengubah level logikanya.',
+                      'GPIO2, GPIO3, GPIO7, GPIO25, GPIO26, GPIO27, and GPIO28 '
+                      'affect configuration during boot or reset. Unused GPIO3, '
+                      'GPIO25, and GPIO28 should be protected from external '
+                      'circuits changing their logic levels.',
                 ),
                 const SizedBox(height: 8),
                 const _CautionNote(
                   color: _kViolet,
                   icon: Icons.usb_rounded,
-                  title: 'FUNGSI ALTERNATIF BOARD',
+                  title: 'ALTERNATE BOARD FUNCTIONS',
                   body:
-                      'GPIO13/14 kosong pada wiring peripheral proyek, tetapi juga '
-                      'memiliki fungsi USB D−/D+ dan SDIO sehingga pemakaiannya dapat '
-                      'berbenturan dengan USB. GPIO15 dicadangkan untuk PSRAM pada '
-                      'modul N16R8 dan tidak dihitung sebagai pin kosong.',
+                      'GPIO13/14 are unused by this project’s peripheral wiring, '
+                      'but also serve USB D−/D+ and SDIO functions, so using them '
+                      'may conflict with USB. GPIO15 is reserved for PSRAM on the '
+                      'N16R8 module and is not considered available.',
                 ),
                 const SizedBox(height: 24),
                 const _SectionHeading(
@@ -105,13 +107,14 @@ class HardwarePeripheralScreen extends StatelessWidget {
                 const _HeaderMapExpansion(),
                 const SizedBox(height: 14),
                 const Text(
-                  'Peta berdasarkan firmware default proyek dan ESP32-C5-DevKitC-1 v1.2. '
-                  'Pastikan revisi board dan modul fisik sesuai sebelum memasang kabel.',
+                  'This map is based on the project’s default firmware and the '
+                  'ESP32-C5-DevKitC-1 v1.2. Verify your board revision and module '
+                  'before connecting wires.',
                   style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5),
                 ),
                 const SizedBox(height: 5),
                 const Text(
-                  'Sumber board: Espressif ESP32-C5-DevKitC-1 · Hardware Reference',
+                  'Board reference: Espressif ESP32-C5-DevKitC-1 · Hardware Reference',
                   style: TextStyle(
                     color: _kMuted,
                     fontSize: 10,
@@ -132,8 +135,8 @@ const _peripheralRoutes = <_PeripheralRoute>[
     icon: Icons.alt_route,
     color: _kViolet,
     title: 'Shared SPI bus',
-    subtitle: 'Bus bersama untuk nRF24, CC1101, dan microSD',
-    note: 'microSD diinisialisasi sebelum akses radio diaktifkan.',
+    subtitle: 'Shared bus for nRF24, CC1101, and microSD',
+    note: 'microSD initializes before radio access is enabled.',
     pins: [
       _PinUse('SCK', 6),
       _PinUse('MISO', 2, warning: true),
@@ -154,38 +157,38 @@ const _peripheralRoutes = <_PeripheralRoute>[
     title: 'CC1101',
     subtitle: 'Radio sub-GHz',
     note: 'Menggunakan shared SPI bus.',
-    pins: [_PinUse('CS', 23), _PinUse('GDO0', 24)],
+    pins: [_PinUse('CS', 10), _PinUse('GDO0', 26)],
   ),
   _PeripheralRoute(
     icon: Icons.settings_remote,
     color: Color(0xFFFF7770),
     title: 'Infrared',
-    subtitle: 'Receiver dan transmitter',
-    note: 'RX menerima sinyal; TX mengirim sinyal IR.',
+    subtitle: 'Receiver and transmitter',
+    note: 'RX receives signals; TX transmits infrared signals.',
     pins: [_PinUse('RX', 5), _PinUse('TX', 4)],
   ),
   _PeripheralRoute(
     icon: Icons.circle,
     color: Color(0xFFFFB44C),
     title: 'Onboard RGB LED',
-    subtitle: 'LED status bawaan board',
-    note: 'GPIO27 juga termasuk strapping pin ESP32-C5.',
+    subtitle: 'Onboard status LED',
+    note: 'GPIO27 is also an ESP32-C5 strapping pin.',
     pins: [_PinUse('DATA', 27, warning: true)],
   ),
   _PeripheralRoute(
     icon: Icons.usb_rounded,
     color: _kMint,
     title: 'UART0',
-    subtitle: 'UART pada header board',
-    note: 'Jalur UART0 terhubung ke USB-to-UART bridge board.',
+    subtitle: 'UART on the board header',
+    note: 'UART0 connects to the board’s USB-to-UART bridge.',
     pins: [_PinUse('TX', 11), _PinUse('RX', 12)],
   ),
   _PeripheralRoute(
     icon: Icons.sd_storage,
     color: Color(0xFF84AFFF),
     title: 'microSD',
-    subtitle: 'Chip select dan deteksi kartu',
-    note: 'Jalur data memakai shared SPI bus.',
+    subtitle: 'Chip select and card detection',
+    note: 'Data lines use the shared SPI bus.',
     pins: [_PinUse('CS', 1), _PinUse('DETECT', 0)],
   ),
 ];
@@ -262,7 +265,7 @@ class _BoardHero extends StatelessWidget {
             children: const [
               Expanded(child: _Metric(value: '14', label: 'DIPAKAI', color: _kMint)),
               SizedBox(width: 8),
-              Expanded(child: _Metric(value: '7', label: 'KOSONG', color: Colors.white)),
+              Expanded(child: _Metric(value: '7', label: 'UNUSED', color: Colors.white)),
               SizedBox(width: 8),
               Expanded(child: _Metric(value: '7', label: 'STRAPPING', color: _kAmber)),
             ],
@@ -274,7 +277,7 @@ class _BoardHero extends StatelessWidget {
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
-                  '14 GPIO unik ditandai punya fungsi pada wiring firmware dan board.',
+                  '14 unique GPIOs are assigned functions by the firmware and board.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.62),
                     fontSize: 10,
@@ -474,10 +477,9 @@ class _PeripheralCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _kPanel.withValues(alpha: 0.96),
+      decoration: glassSurfaceDecoration(
+        context,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: route.color.withValues(alpha: 0.24)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -585,7 +587,7 @@ class _OpenPinsPanel extends StatelessWidget {
 
   static const _pins = <_OpenPin>[
     _OpenPin(3, 'BOOT · MTDI', caution: true),
-    _OpenPin(10, 'Bebas'),
+    _OpenPin(10, 'Available'),
     _OpenPin(13, 'USB D− · SDIO3', caution: true),
     _OpenPin(14, 'USB D+ · SDIO2', caution: true),
     _OpenPin(25, 'STRAPPING', caution: true),
@@ -597,10 +599,9 @@ class _OpenPinsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(13),
-      decoration: BoxDecoration(
-        color: _kPanel.withValues(alpha: 0.96),
+      decoration: glassSurfaceDecoration(
+        context,
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.09)),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -756,11 +757,11 @@ class _HeaderMapExpansion extends StatelessWidget {
           iconColor: _kMint,
           collapsedIconColor: _kMuted,
           title: const Text(
-            'Buka peta pin fisik',
+            'Open physical pin map',
             style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
           ),
           subtitle: const Text(
-            'Nomor header · GPIO · fungsi pada board',
+            'Header number · GPIO · board function',
             style: TextStyle(color: Colors.white54, fontSize: 10),
           ),
           children: const [
@@ -793,41 +794,41 @@ class _HeaderPin {
 }
 
 const _j1Pins = <_HeaderPin>[
-  _HeaderPin(1, '3V3', 'Catu daya', blocked: true),
-  _HeaderPin(2, 'RST', 'Reset aktif-low', blocked: true),
+  _HeaderPin(1, '3V3', 'Power', blocked: true),
+  _HeaderPin(2, 'RST', 'Active-low reset', blocked: true),
   _HeaderPin(3, 'GPIO2', 'SPI MISO · strap', inUse: true, warning: true),
-  _HeaderPin(4, 'GPIO3', 'Kosong · strap / MTDI', warning: true),
+  _HeaderPin(4, 'GPIO3', 'Unused · strap / MTDI', warning: true),
   _HeaderPin(5, 'GPIO0', 'microSD detect', inUse: true),
   _HeaderPin(6, 'GPIO1', 'microSD CS', inUse: true),
   _HeaderPin(7, 'GPIO6', 'SPI SCK', inUse: true),
   _HeaderPin(8, 'GPIO7', 'SPI MOSI · strap', inUse: true, warning: true),
   _HeaderPin(9, 'GPIO8', 'nRF24 CE', inUse: true),
   _HeaderPin(10, 'GPIO9', 'nRF24 CSN', inUse: true),
-  _HeaderPin(11, 'GPIO10', 'Kosong', warning: false),
-  _HeaderPin(12, 'GPIO26', 'Kosong · strap', warning: true),
-  _HeaderPin(13, 'GPIO25', 'Kosong · strap', warning: true),
-  _HeaderPin(14, '5V', 'Catu daya', blocked: true),
+  _HeaderPin(11, 'GPIO10', 'CC1101 CS', inUse: true),
+  _HeaderPin(12, 'GPIO26', 'CC1101 GDO0 · strap', inUse: true, warning: true),
+  _HeaderPin(13, 'GPIO25', 'Unused · strap', warning: true),
+  _HeaderPin(14, '5V', 'Power', blocked: true),
   _HeaderPin(15, 'GND', 'Ground', blocked: true),
-  _HeaderPin(16, 'NC', 'Tidak terhubung', blocked: true),
+  _HeaderPin(16, 'NC', 'Not connected', blocked: true),
 ];
 
 const _j3Pins = <_HeaderPin>[
   _HeaderPin(1, 'GND', 'Ground', blocked: true),
   _HeaderPin(2, 'GPIO11', 'UART0 TX', inUse: true),
   _HeaderPin(3, 'GPIO12', 'UART0 RX', inUse: true),
-  _HeaderPin(4, 'GPIO24', 'CC1101 GDO0', inUse: true),
-  _HeaderPin(5, 'GPIO23', 'CC1101 CS', inUse: true),
+  _HeaderPin(4, 'GPIO24', 'Unused', warning: false),
+  _HeaderPin(5, 'GPIO23', 'ESP flasher BOOT', inUse: true),
   _HeaderPin(6, 'NC/15', 'PSRAM internal · unavailable', blocked: true),
   _HeaderPin(7, 'GPIO27', 'RGB LED · strap', inUse: true, warning: true),
   _HeaderPin(8, 'GPIO4', 'Infrared TX', inUse: true),
   _HeaderPin(9, 'GPIO5', 'Infrared RX', inUse: true),
-  _HeaderPin(10, 'NC', 'Tidak terhubung', blocked: true),
-  _HeaderPin(11, 'GPIO28', 'Kosong · strap', warning: true),
+  _HeaderPin(10, 'NC', 'Not connected', blocked: true),
+  _HeaderPin(11, 'GPIO28', 'Unused · strap', warning: true),
   _HeaderPin(12, 'GND', 'Ground', blocked: true),
-  _HeaderPin(13, 'GPIO14', 'Kosong · USB D+ / SDIO2', warning: true),
-  _HeaderPin(14, 'GPIO13', 'Kosong · USB D− / SDIO3', warning: true),
+  _HeaderPin(13, 'GPIO14', 'Unused · USB D+ / SDIO2', warning: true),
+  _HeaderPin(14, 'GPIO13', 'Unused · USB D− / SDIO3', warning: true),
   _HeaderPin(15, 'GND', 'Ground', blocked: true),
-  _HeaderPin(16, 'NC', 'Tidak terhubung', blocked: true),
+  _HeaderPin(16, 'NC', 'Not connected', blocked: true),
 ];
 
 class _HeaderPinMap extends StatelessWidget {

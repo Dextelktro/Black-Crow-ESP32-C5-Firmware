@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/ir_models.dart';
 import '../services/device_controller.dart';
+import '../widgets/glass_surface.dart';
 import 'ir_hub_screen.dart';
 import 'ir_universal_remote_screen.dart';
 
@@ -54,14 +55,14 @@ class _CategoryCard extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(18),
             gradient: LinearGradient(
-              colors: [
-                color.withValues(alpha: 0.16),
-                Colors.white.withValues(alpha: 0.02),
-              ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(alpha: 0.055),
+                Colors.white.withValues(alpha: 0.015),
+              ],
             ),
-            border: Border.all(color: color.withValues(alpha: 0.4)),
+            border: Border.all(color: glassNeutralBorder),
           ),
           padding: const EdgeInsets.all(16),
           child: Column(

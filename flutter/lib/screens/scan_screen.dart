@@ -250,7 +250,7 @@ class _ScanScreenState extends State<ScanScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ESP32-C5 Deauther'),
+        title: const Text('Black Crow'),
         actions: [
           IconButton(
             icon: Icon(_scanning ? Icons.stop : Icons.refresh),

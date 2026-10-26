@@ -17,16 +17,28 @@ class SubghzReadRawScreen extends StatefulWidget {
 
 class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
   DeviceController? _ctrl;
+  bool _sessionPrepared = false;
+  bool _strictMode = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _ctrl = context.read<DeviceController>();
+    if (!_sessionPrepared) {
+      _sessionPrepared = true;
+      _ctrl!.subghzResetReadRawSession();
+    }
   }
 
   @override
   void dispose() {
-    if (_ctrl?.subghzReadRawRunning ?? false) _ctrl!.subghzStop();
+    final ctrl = _ctrl;
+    if (ctrl != null) {
+      closeSubghzSessionOnExit(
+        ctrl.subghzCloseReadRawSession,
+        'Sub-GHz Read RAW',
+      );
+    }
     super.dispose();
   }
 
@@ -46,7 +58,7 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
             IconButton(
               tooltip: 'Clear list',
               icon: const Icon(Icons.clear_all),
-              onPressed: () => setState(ctrl.subghzBursts.clear),
+              onPressed: () => setState(ctrl.subghzResetReadRawSession),
             ),
         ],
       ),
@@ -59,12 +71,25 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
               children: [
                 SubghzConfigStrip(ctrl: ctrl),
                 const SizedBox(height: 14),
+                SwitchListTile.adaptive(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                  value: _strictMode,
+                  onChanged: running
+                      ? null
+                      : (value) => setState(() => _strictMode = value),
+                  title: const Text('Strict RAW filtering'),
+                  subtitle: const Text(
+                    'Show the first complete waveform immediately; ignore truncated captures and suppress repeats.',
+                  ),
+                ),
+                const SizedBox(height: 8),
                 SgButton(
                   label: running ? 'STOP CAPTURE' : 'START CAPTURE',
                   icon: running ? Icons.stop : Icons.fiber_manual_record,
                   danger: running,
-                  onPressed: () =>
-                      running ? ctrl.subghzStop() : ctrl.subghzReadRawStart(),
+                  onPressed: () => running
+                      ? ctrl.subghzStop()
+                      : ctrl.subghzReadRawStart(strict: _strictMode),
                 ),
                 const SizedBox(height: 10),
                 Row(
@@ -86,8 +111,9 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
                         label: 'SAVE LAST',
                         icon: Icons.save_alt,
                         filled: false,
-                        onPressed:
-                            hasCapture && !txBusy ? () => _saveLast(ctrl) : null,
+                        onPressed: hasCapture && !txBusy
+                            ? () => _saveLast(ctrl)
+                            : null,
                       ),
                     ),
                   ],
@@ -154,7 +180,11 @@ class _Empty extends StatelessWidget {
                 ? 'Listening… trigger a remote near the antenna.'
                 : 'Start a capture, then press a remote nearby.',
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white38, fontSize: 13, height: 1.5),
+            style: const TextStyle(
+              color: Colors.white38,
+              fontSize: 13,
+              height: 1.5,
+            ),
           ),
         ],
       ),
@@ -185,7 +215,10 @@ class _BurstCard extends StatelessWidget {
             children: [
               if (latest)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: kSgAmber.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(5),
@@ -230,9 +263,14 @@ class _BurstCard extends StatelessWidget {
           const SizedBox(height: 10),
           Row(
             children: [
-              Expanded(child: SgStat(label: 'PULSES', value: '${burst.count}')),
               Expanded(
-                child: SgStat(label: 'FREQ', value: '${sgMhz(burst.freqHz)} MHz'),
+                child: SgStat(label: 'PULSES', value: '${burst.count}'),
+              ),
+              Expanded(
+                child: SgStat(
+                  label: 'TUNED FREQ',
+                  value: '${sgMhz(burst.freqHz)} MHz',
+                ),
               ),
               Expanded(
                 child: SgStat(

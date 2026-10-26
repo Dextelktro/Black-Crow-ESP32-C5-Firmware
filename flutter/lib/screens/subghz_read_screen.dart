@@ -16,17 +16,27 @@ class SubghzReadScreen extends StatefulWidget {
 
 class _SubghzReadScreenState extends State<SubghzReadScreen> {
   DeviceController? _ctrl;
+  bool _sessionPrepared = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _ctrl = context.read<DeviceController>();
+    if (!_sessionPrepared) {
+      _sessionPrepared = true;
+      _ctrl!.subghzResetReadSession();
+    }
   }
 
   @override
   void dispose() {
-    // Leave the radio idle when the screen closes.
-    if (_ctrl?.subghzReadRunning ?? false) _ctrl!.subghzStop();
+    final ctrl = _ctrl;
+    if (ctrl != null) {
+      closeSubghzSessionOnExit(
+        ctrl.subghzCloseReadSession,
+        'Sub-GHz Read',
+      );
+    }
     super.dispose();
   }
 
@@ -35,6 +45,15 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
     final ctrl = context.watch<DeviceController>();
     final running = ctrl.subghzReadRunning;
     final decoded = ctrl.subghzDecoded;
+    // Firmware persists the newest known decode; unknown entries can appear
+    // above it in the UI, so use the first known entry for the save action.
+    SubghzDecoded? lastKnown;
+    for (final d in decoded) {
+      if (d.isKnown) {
+        lastKnown = d;
+        break;
+      }
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -44,7 +63,7 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
             IconButton(
               tooltip: 'Clear list',
               icon: const Icon(Icons.clear_all),
-              onPressed: () => setState(ctrl.subghzDecoded.clear),
+              onPressed: () => setState(ctrl.subghzResetReadSession),
             ),
         ],
       ),
@@ -67,12 +86,12 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
                 ),
                 const SizedBox(height: 10),
                 SgButton(
-                  label: 'SAVE LAST DECODE',
+                  label: lastKnown == null
+                      ? 'SAVE LAST DECODE'
+                      : 'SAVE: ${lastKnown.proto} ${lastKnown.keyHex}',
                   icon: Icons.save_alt,
                   filled: false,
-                  onPressed: decoded.any((d) => d.isKnown)
-                      ? () => _saveLast(ctrl)
-                      : null,
+                  onPressed: lastKnown == null ? null : () => _saveLast(ctrl),
                 ),
                 const SizedBox(height: 18),
                 Row(
@@ -120,8 +139,6 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
   Future<void> _saveLast(DeviceController ctrl) async {
     final name = await promptSubghzName(context, ctrl);
     if (name == null) return;
-    if (ctrl.subghzReadRunning) await ctrl.subghzStop();
-    await Future<void>.delayed(const Duration(milliseconds: 150));
     await ctrl.subghzSave(name);
   }
 }
@@ -229,7 +246,12 @@ class _DecodedCard extends StatelessWidget {
           const SizedBox(height: 10),
           Row(
             children: [
-              Expanded(child: SgStat(label: 'FREQ', value: '${sgMhz(d.freqHz)} MHz')),
+              Expanded(
+                child: SgStat(
+                  label: 'TUNED FREQ',
+                  value: '${sgMhz(d.freqHz)} MHz',
+                ),
+              ),
               Expanded(
                 child: SgStat(
                   label: 'RSSI',

@@ -77,7 +77,13 @@ class _SubghzBruteScreenState extends State<SubghzBruteScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
-    if (_ctrl?.subghzBruteRunning ?? false) _ctrl!.subghzStop();
+    final ctrl = _ctrl;
+    if (ctrl != null) {
+      closeSubghzSessionOnExit(
+        ctrl.subghzCloseBruteSession,
+        'Sub-GHz Brute Force',
+      );
+    }
     super.dispose();
   }
 
@@ -209,7 +215,11 @@ class _SubghzBruteScreenState extends State<SubghzBruteScreen> {
                   'rolling-code remotes are immune. Transmit only on equipment you '
                   'own or are authorised to test; keep the device RF-isolated when '
                   'experimenting.',
-                  style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.4),
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 11,
+                    height: 1.4,
+                  ),
                 ),
               ],
             ),
@@ -272,12 +282,15 @@ class _Config extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('PROTOCOL',
-              style: TextStyle(
-                  color: Colors.white38,
-                  fontSize: 10,
-                  letterSpacing: 1.2,
-                  fontWeight: FontWeight.bold)),
+          const Text(
+            'PROTOCOL',
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 10,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
@@ -291,22 +304,21 @@ class _Config extends StatelessWidget {
             ],
           ),
           const Divider(height: 24, color: Colors.white10),
-          const Text('BITS',
-              style: TextStyle(
-                  color: Colors.white38,
-                  fontSize: 10,
-                  letterSpacing: 1.2,
-                  fontWeight: FontWeight.bold)),
+          const Text(
+            'BITS',
+            style: TextStyle(
+              color: Colors.white38,
+              fontSize: 10,
+              letterSpacing: 1.2,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
             children: [
               for (final b in proto.bits)
-                _Pill(
-                  label: '$b',
-                  selected: b == bits,
-                  onTap: () => onBits(b),
-                ),
+                _Pill(label: '$b', selected: b == bits, onTap: () => onBits(b)),
             ],
           ),
           const SizedBox(height: 10),
@@ -327,8 +339,10 @@ class _Config extends StatelessWidget {
           const Divider(height: 24, color: Colors.white10),
           Row(
             children: [
-              const Text('Repeats per code',
-                  style: TextStyle(color: Colors.white70, fontSize: 13)),
+              const Text(
+                'Repeats per code',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+              ),
               const Spacer(),
               _MiniStepper(
                 value: repeats,
@@ -445,10 +459,7 @@ class _Progress extends StatelessWidget {
                 ),
               ),
               Expanded(
-                child: SgStat(
-                  label: 'ETA',
-                  value: running ? etaText : '—',
-                ),
+                child: SgStat(label: 'ETA', value: running ? etaText : '—'),
               ),
               Expanded(
                 child: SgStat(
@@ -485,7 +496,9 @@ class _Pill extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
-            color: selected ? kSgAmber.withValues(alpha: 0.18) : Colors.transparent,
+            color: selected
+                ? kSgAmber.withValues(alpha: 0.18)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
               color: kSgAmber.withValues(alpha: selected ? 0.8 : 0.3),
@@ -557,8 +570,11 @@ class _MiniStepper extends StatelessWidget {
               color: kSgAmber.withValues(alpha: onTap == null ? 0.2 : 0.5),
             ),
           ),
-          child: Icon(icon,
-              size: 17, color: onTap == null ? Colors.white24 : kSgAmber),
+          child: Icon(
+            icon,
+            size: 17,
+            color: onTap == null ? Colors.white24 : kSgAmber,
+          ),
         ),
       ),
     );

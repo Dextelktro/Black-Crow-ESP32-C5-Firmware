@@ -82,6 +82,20 @@ class SubghzBand {
   int get centerHz => (loHz + hiHz) ~/ 2;
 }
 
+/// A previous Frequency Analyzer detection, newest entries shown first.
+@immutable
+class SubghzAnalyzerDetection {
+  const SubghzAnalyzerDetection({
+    required this.freqHz,
+    required this.rssi,
+    required this.at,
+  });
+
+  final int freqHz;
+  final int rssi;
+  final DateTime at;
+}
+
 /// A decoded protocol frame (Read mode).
 @immutable
 class SubghzDecoded {

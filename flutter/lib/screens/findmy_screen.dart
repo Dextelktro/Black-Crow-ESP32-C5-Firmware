@@ -190,10 +190,10 @@ class _FindMyScreenState extends State<FindMyScreen> {
               border: Border.all(color: _kFindMyAccent.withValues(alpha: 0.22)),
             ),
             child: const Text(
-              'Hanya menampilkan iklan Apple yang cocok dengan format payload '
-              'Find My lost-mode AirTag. Format BLE ini bukan bukti kriptografis '
-              'bahwa perangkat adalah AirTag asli; tracker kompatibel atau '
-              'iklan tiruan dapat memakai format yang sama.',
+              'Shows Apple advertisements that match the Find My lost-mode '
+              'AirTag payload format. This BLE format does not cryptographically '
+              'prove that a device is a genuine AirTag; compatible trackers or '
+              'spoofed advertisements may use the same format.',
               style: TextStyle(
                 color: Colors.white70,
                 fontSize: 11,
@@ -549,7 +549,7 @@ class _FindMyMonitorScreenState extends State<FindMyMonitorScreen> {
                 _SignalMeter(rssi: device.rssi, height: 8),
                 const SizedBox(height: 12),
                 const Text(
-                  'Riwayat RSSI sesi ini (pembaruan kandidat sekitar setiap 2 detik)',
+                  'Session RSSI history (candidate updates about every 2 seconds)',
                   style: TextStyle(color: Colors.white54, fontSize: 10),
                 ),
                 const SizedBox(height: 6),
@@ -559,8 +559,8 @@ class _FindMyMonitorScreenState extends State<FindMyMonitorScreen> {
                   child: CustomPaint(painter: _RssiChartPainter(samples)),
                 ),
                 const Text(
-                  'Jarak: tidak dapat diestimasi secara akurat dari RSSI BLE. '
-                  'Indikator di atas hanya menunjukkan kekuatan sinyal relatif.',
+                  'Distance cannot be estimated accurately from BLE RSSI. '
+                  'The indicator above shows relative signal strength only.',
                   style: TextStyle(color: Colors.white54, fontSize: 11),
                 ),
               ],
@@ -571,13 +571,13 @@ class _FindMyMonitorScreenState extends State<FindMyMonitorScreen> {
             title: 'IDENTITY & OBSERVATIONS',
             child: Column(
               children: [
-                _infoRow('BLE address saat ini', device.addr, monospace: true),
+                _infoRow('Current BLE address', device.addr, monospace: true),
                 _infoRow('Company ID', 'Apple · 0x${device.company}'),
-                _infoRow('Klasifikasi iklan', 'AirTag-format candidate'),
-                _infoRow('Pengamatan iklan', '${device.seen}'),
-                _infoRow('Pertama terlihat', _formatTime(device.firstSeen)),
-                _infoRow('Terakhir terlihat', _formatTime(device.lastSeen)),
-                _infoRow('Lokasi tracker', 'Tidak tersedia dari iklan BLE'),
+                _infoRow('Advertisement type', 'AirTag-format candidate'),
+                _infoRow('Observations', '${device.seen}'),
+                _infoRow('First seen', _formatTime(device.firstSeen)),
+                _infoRow('Last seen', _formatTime(device.lastSeen)),
+                _infoRow('Tracker location', 'Not available from BLE advertisements'),
               ],
             ),
           ),
@@ -590,10 +590,10 @@ class _FindMyMonitorScreenState extends State<FindMyMonitorScreen> {
               border: Border.all(color: Colors.white12),
             ),
             child: const Text(
-              'Alamat BLE dapat berubah dan tidak membuktikan identitas tetap. '
-              'Payload yang cocok dapat berasal dari AirTag atau perangkat '
-              'kompatibel yang memakai format serupa. '
-              'Lokasi yang ditampilkan di sini bukan lokasi tracker.',
+              'BLE addresses can change and do not prove a persistent identity. '
+              'A matching payload may come from an AirTag or a compatible device '
+              'using a similar format. The location shown here is not the '
+              'tracker location.',
               style: TextStyle(
                 color: Colors.white60,
                 fontSize: 11,

@@ -688,7 +688,7 @@ class DeviceController extends ChangeNotifier {
   // Current radio config (echoed by FREQ/PRESET/STATUS/RSSI_THR).
   int subghzFreqHz = 433920000;
   String subghzPresetId = 'ook650';
-  int subghzRssiThreshold = -80;
+  int subghzRssiThreshold = -90;
   SubghzStorageTarget subghzStorageTarget = SubghzStorageTarget.unset;
   bool subghzStorageAvailable = false;
   // Mode flags (START/STOPPED telemetry for read/readraw; optimistic for the
@@ -710,8 +710,11 @@ class DeviceController extends ChangeNotifier {
   // Frequency analyzer.
   int subghzAnalyzerPeakHz = 0;
   int subghzAnalyzerRssi = -128;
+  DateTime? subghzAnalyzerPeakAt;
+  final List<SubghzAnalyzerDetection> subghzAnalyzerDetections = [];
   final List<int> subghzAnalyzerHistory = []; // peak rssi, oldest → newest
   static const int _subghzAnalyzerHistoryLen = 96;
+  static const int _subghzAnalyzerDetectionsMax = 40;
   // Spectrum.
   SubghzSpecFrame? subghzSpecFrame;
   int subghzSpecRev = 0;
@@ -1460,7 +1463,8 @@ class DeviceController extends ChangeNotifier {
       return;
     }
     final readKnown = _reSgReadKnown.firstMatch(line);
-    if (readKnown != null && readKnown.group(1) != 'unknown') {
+    if (readKnown != null) {
+      if (!subghzReadRunning || readKnown.group(1) == 'unknown') return;
       final bits = int.tryParse(readKnown.group(2)!) ?? 0;
       subghzDecoded.insert(
         0,
@@ -1482,6 +1486,7 @@ class DeviceController extends ChangeNotifier {
     }
     final readUnknown = _reSgReadUnknown.firstMatch(line);
     if (readUnknown != null) {
+      if (!subghzReadRunning) return;
       subghzDecoded.insert(
         0,
         SubghzDecoded(
@@ -1502,6 +1507,7 @@ class DeviceController extends ChangeNotifier {
     }
     final raw = _reSgRaw.firstMatch(line);
     if (raw != null) {
+      if (!subghzReadRawRunning) return;
       final burst = SubghzRawBurst(
         seq: int.tryParse(raw.group(1)!) ?? 0,
         count: int.tryParse(raw.group(2)!) ?? 0,
@@ -1521,6 +1527,7 @@ class DeviceController extends ChangeNotifier {
     }
     final rawBin = _reSgRawBin.firstMatch(line);
     if (rawBin != null) {
+      if (!subghzReadRawRunning) return;
       final seq = int.tryParse(rawBin.group(1)!) ?? -1;
       final burst = _subghzLiveBurst;
       if (burst != null && burst.seq == seq) {
@@ -1530,6 +1537,7 @@ class DeviceController extends ChangeNotifier {
     }
     final spec = _reSgSpec.firstMatch(line);
     if (spec != null) {
+      if (!subghzSpectrumRunning) return;
       _sgCommitSpecFrame(); // flush any previous in-progress frame
       _sgSpecSeq = int.tryParse(spec.group(1)!) ?? 0;
       _sgSpecCenter = int.tryParse(spec.group(2)!) ?? 0;
@@ -1543,6 +1551,7 @@ class DeviceController extends ChangeNotifier {
     }
     final specBin = _reSgSpecBin.firstMatch(line);
     if (specBin != null) {
+      if (!subghzSpectrumRunning) return;
       final seq = int.tryParse(specBin.group(1)!) ?? -1;
       if (seq == _sgSpecSeq) {
         _sgSpecBins.addAll(_sgParseCsv(specBin.group(3)!));
@@ -1554,8 +1563,28 @@ class DeviceController extends ChangeNotifier {
     }
     final analyzer = _reSgAnalyzer.firstMatch(line);
     if (analyzer != null) {
-      subghzAnalyzerPeakHz = int.tryParse(analyzer.group(1)!) ?? 0;
-      subghzAnalyzerRssi = int.tryParse(analyzer.group(2)!) ?? -128;
+      if (!subghzAnalyzerRunning) return;
+      final freqHz = int.tryParse(analyzer.group(1)!) ?? 0;
+      final rssi = int.tryParse(analyzer.group(2)!) ?? -128;
+      if (freqHz <= 0 || rssi <= -128) return;
+
+      final now = DateTime.now();
+      if (subghzAnalyzerPeakHz > 0 && subghzAnalyzerRssi > -128) {
+        subghzAnalyzerDetections.insert(
+          0,
+          SubghzAnalyzerDetection(
+            freqHz: subghzAnalyzerPeakHz,
+            rssi: subghzAnalyzerRssi,
+            at: subghzAnalyzerPeakAt ?? now,
+          ),
+        );
+        if (subghzAnalyzerDetections.length > _subghzAnalyzerDetectionsMax) {
+          subghzAnalyzerDetections.removeLast();
+        }
+      }
+      subghzAnalyzerPeakHz = freqHz;
+      subghzAnalyzerRssi = rssi;
+      subghzAnalyzerPeakAt = now;
       subghzAnalyzerHistory.add(subghzAnalyzerRssi);
       while (subghzAnalyzerHistory.length > _subghzAnalyzerHistoryLen) {
         subghzAnalyzerHistory.removeAt(0);
@@ -1646,7 +1675,8 @@ class DeviceController extends ChangeNotifier {
     }
     final savedRaw = _reSgSavedRaw.firstMatch(line);
     if (savedRaw != null) {
-      subghzNotice = 'Saved "${savedRaw.group(1)}" (${savedRaw.group(2)} pulses)';
+      subghzNotice =
+          'Saved "${savedRaw.group(1)}" (${savedRaw.group(2)} pulses)';
       unawaited(_sendCommand('subghz ls').catchError((Object _) {}));
       return;
     }
@@ -4727,6 +4757,89 @@ class DeviceController extends ChangeNotifier {
     await _sendCommand('subghz storage show');
   }
 
+  void _clearSubghzReadSession() {
+    subghzDecoded.clear();
+    subghzHasCapture = false;
+  }
+
+  void _clearSubghzReadRawSession() {
+    subghzBursts.clear();
+    _subghzLiveBurst = null;
+    subghzHasCapture = false;
+  }
+
+  void _clearSubghzAnalyzerSession() {
+    subghzAnalyzerPeakHz = 0;
+    subghzAnalyzerRssi = -128;
+    subghzAnalyzerPeakAt = null;
+    subghzAnalyzerDetections.clear();
+    subghzAnalyzerHistory.clear();
+  }
+
+  void _clearSubghzSpectrumSession() {
+    subghzSpecFrame = null;
+    subghzSpecRows.clear();
+    _sgSpecSeq = -1;
+    _sgSpecN = 0;
+    _sgSpecCenter = 0;
+    _sgSpecSpan = 0;
+    _sgSpecStep = 0;
+    _sgSpecPeak = -128;
+    _sgSpecPeakFq = 0;
+    _sgSpecBins.clear();
+    subghzSpecRev++;
+  }
+
+  void subghzResetReadSession() {
+    _clearSubghzReadSession();
+  }
+
+  void subghzResetReadRawSession() {
+    _clearSubghzReadRawSession();
+  }
+
+  void subghzResetAnalyzerSession() {
+    _clearSubghzAnalyzerSession();
+  }
+
+  void subghzResetSpectrumSession() {
+    _clearSubghzSpectrumSession();
+  }
+
+  Future<void> _closeSubghzSession({
+    required void Function() clearSession,
+  }) async {
+    // FIX: jangan gantungkan pengiriman `subghz stop` pada flag `active`
+    // sisi-app — bisa basi kalau paket BLE READ START/STOPPED sempat hilang
+    // (worker firmware tetap jalan walau app mengira sudah berhenti).
+    // subghz_stop() firmware idempotent (no-op kalau memang tidak ada
+    // worker aktif — lihat subghz.h), jadi aman dikirim tanpa syarat.
+    _subghzClearModes();
+    clearSession();
+    _notifyListeners();
+    if (!connectionLost) {
+      await _sendCommand('subghz stop');
+    }
+  }
+
+  Future<void> subghzCloseReadSession() =>
+      _closeSubghzSession(clearSession: _clearSubghzReadSession);
+
+  Future<void> subghzCloseReadRawSession() => _closeSubghzSession(
+    clearSession: _clearSubghzReadRawSession,
+  );
+
+  Future<void> subghzCloseAnalyzerSession() => _closeSubghzSession(
+    clearSession: _clearSubghzAnalyzerSession,
+  );
+
+  Future<void> subghzCloseSpectrumSession() => _closeSubghzSession(
+    clearSession: _clearSubghzSpectrumSession,
+  );
+
+  Future<void> subghzCloseBruteSession() =>
+      _closeSubghzSession(clearSession: () {});
+
   Future<void> subghzStop() async {
     _subghzClearModes();
     _notifyListeners();
@@ -4747,14 +4860,21 @@ class DeviceController extends ChangeNotifier {
     }
   }
 
-  Future<void> subghzReadStart() =>
-      _subghzStartMode('subghz read', () => subghzReadRunning = true);
+  Future<void> subghzReadStart() {
+    _clearSubghzReadSession();
+    return _subghzStartMode('subghz read', () => subghzReadRunning = true);
+  }
 
-  Future<void> subghzReadRawStart() =>
-      _subghzStartMode('subghz readraw', () => subghzReadRawRunning = true);
+  Future<void> subghzReadRawStart({bool strict = false}) {
+    _clearSubghzReadRawSession();
+    return _subghzStartMode(
+      strict ? 'subghz readraw strict' : 'subghz readraw',
+      () => subghzReadRawRunning = true,
+    );
+  }
 
   Future<void> subghzAnalyzerStart() {
-    subghzAnalyzerHistory.clear();
+    _clearSubghzAnalyzerSession();
     return _subghzStartMode(
       'subghz analyzer',
       () => subghzAnalyzerRunning = true,
@@ -4762,8 +4882,7 @@ class DeviceController extends ChangeNotifier {
   }
 
   Future<void> subghzSpectrumBand(int index, {int bins = 0}) {
-    subghzSpecRows.clear();
-    subghzSpecRev++;
+    _clearSubghzSpectrumSession();
     final cmd = bins > 0
         ? 'subghz spectrum band $index $bins'
         : 'subghz spectrum band $index';

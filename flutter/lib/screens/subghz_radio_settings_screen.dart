@@ -410,7 +410,7 @@ class _SquelchPanelState extends State<_SquelchPanel> {
             ),
             value: off,
             onChanged: (v) =>
-                widget.ctrl.subghzSetRssiThreshold(v ? -128 : -80),
+                widget.ctrl.subghzSetRssiThreshold(v ? -128 : -90),
           ),
         ],
       ),
