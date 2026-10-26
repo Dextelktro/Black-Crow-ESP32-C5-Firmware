@@ -152,7 +152,9 @@ the project targets `esp32c5`.
 cd esp32-c5
 idf.py set-target esp32c5
 idf.py build
+
 # or use this method if the previous one has problems
+
 # Firmware build (from the cloned root repo)
 Set-Location ".\esp32-c5"
 
