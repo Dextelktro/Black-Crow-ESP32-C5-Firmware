@@ -41,7 +41,7 @@ and 8 MB quad-SPI PSRAM.
 </p>
 
 <p align="center">
-  <a href="https://vt.tiktok.com/ZSg4SdxNa/">Watch the video on TikTok</a>
+  <a href="https://vt.tiktok.com/ZSg4y3XAG/">Watch the video on TikTok</a>
 </p>
 
 This is a research and education project. Some firmware modules can transmit
