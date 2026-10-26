@@ -2,6 +2,10 @@
 
 This firmware is a fork of the original version of the x1watt/esp32 c5 deauth project, https://github.com/x1watt/esp32-c5-deauth, completely overhauling the original firmware. The original firmware only had features like WiFi scan, nuke, WiFi radar on nuke, 2.4GHz/5GHz WiFi attacks, and a few other features. In my first test with the original firmware, the WiFi attacks didn’t work and there were also issues with delay and freezing in the app. That’s when I tried to fix the WiFi attack problems and also address the app delay and freezing issues, completely revamp the firmware and app, and combine new features and improvements into the original components.
 
+<p align="center">
+  <img src="screenshots/black-crow-firmware.jpeg" alt="Black Crow Network and Embedded Experiment Laboratory logo" width="800">
+</p>
+
 # The primary focus of this project includes
 
 Firmware Development — Developing and refining the core firmware to enhance stability and extensibility, while enabling support for various features and additional modules.
@@ -32,7 +36,11 @@ Firmware and companion controllers for the **ESP32-C5-DevKitC-1** with an
 and 8 MB quad-SPI PSRAM.
 
 <p align="center">
-  <img src="screenshots/panel1-deauth-wifi-routers.png" alt="Flutter controller device and network view" width="380">
+  <img src="screenshots/radio-c5-dashboard.jpeg" alt="Radio C5 dashboard and device status" width="380">
+  <br>
+  <img src="screenshots/radio-c5-tools.jpeg" alt="Radio C5 tools and radio modules" width="380">
+  <br>
+  <a href="https://vt.tiktok.com/ZSg4SdxNa/">Watch the video on TikTok</a>
 </p>
 
 This is a research and education project. Some firmware modules can transmit
