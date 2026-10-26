@@ -1,0 +1,301 @@
+########## test_subghz_protocol ##########
+== valid frames decode to correct proto/key/bits ==
+  PASS Princeton 0xABCDEF te=390
+  PASS Princeton 0x000001 te=300
+  PASS Princeton MSB 0x800001 te=450
+  PASS CAME-12 0xABC -> ('CAME', 2748, 12, 320)
+  PASS CAME-24 0xABCDEF -> ('CAME', 11259375, 24, 320)
+  PASS NiceFlo-12 0x801 -> ('NiceFlo', 2049, 12, 700)
+  PASS Holtek-40 -> ('Holtek', 348484102025, 40, 430)
+== tolerance (decoder must still match within window) ==
+  PASS CAME-12 jitter +5% -> ('CAME', 2748, 12, 320)
+  PASS CAME-12 jitter +10% -> ('CAME', 2748, 12, 320)
+  PASS CAME-12 jitter +20% -> ('CAME', 2748, 12, 320)
+  PASS CAME-12 jitter -5% -> ('CAME', 2748, 12, 320)
+  PASS CAME-12 jitter -10% -> ('CAME', 2748, 12, 320)
+  PASS CAME-12 jitter -20% -> ('CAME', 2748, 12, 320)
+  PASS Princeton jitter +5% -> ('Princeton', 11259375, 24, 409)
+  PASS Princeton jitter +10% -> ('Princeton', 11259375, 24, 429)
+== FALSE POSITIVE: CAME-24 must NOT read as Princeton ==
+  PASS CAME-24 classified CAME (not Princeton)
+  PASS Nice-12 classified NiceFlo (not Princeton)
+  PASS Holtek-40 classified Holtek (not Princeton/CAME)
+== FALSE POSITIVE: random / corrupt / truncated ==
+  PASS random alternating bursts: 0/20000 false decodes
+  PASS CAME 8-bit (unsupported count) rejected -> None
+  PASS Holtek wrong header-nibble rejected -> None
+  PASS True
+  (info) pulse-dropped CAME-12 -> None
+== stateless: valid -> invalid -> valid independent ==
+  PASS same CAME decodes identically after a junk burst
+== encoder matches INDEPENDENT spec frame (level+duration sequence) ==
+  PASS CAME-12 encode == spec
+  PASS NiceFlo-12 encode == spec
+  PASS Princeton encode == spec
+== bit order MSB-first (0x800001) ==
+  PASS MSB-first: first bit of 0x800001 is 1 -> [-640, 320]
+  PASS LSB bit of 0x800001 is 1 -> [-640, 320]
+  PASS second bit of 0x800001 is 0 -> [-320, 640]
+== round-trip encode(strip header/guard)->capture->decode ==
+  PASS CAME-12 round-trip -> ('CAME', 2748, 12, 320)
+  PASS Princeton round-trip -> ('Princeton', 11259375, 24, 390)
+== NEW protocols decode to correct proto/key/bits ==
+  PASS Linear 0x3FF (lone high) -> ('Linear', 1023, 10, 500)
+  PASS Linear 0x3FF (gap present) -> ('Linear', 1023, 10, 500)
+  PASS Linear 0x001 (lone high) -> ('Linear', 1, 10, 500)
+  PASS Linear 0x001 (gap present) -> ('Linear', 1, 10, 500)
+  PASS Linear 0x200 (lone high) -> ('Linear', 512, 10, 500)
+  PASS Linear 0x200 (gap present) -> ('Linear', 512, 10, 500)
+  PASS Linear 0x155 (lone high) -> ('Linear', 341, 10, 500)
+  PASS Linear 0x155 (gap present) -> ('Linear', 341, 10, 500)
+  PASS Linear 0x2AA (lone high) -> ('Linear', 682, 10, 500)
+  PASS Linear 0x2AA (gap present) -> ('Linear', 682, 10, 500)
+  PASS Linear 0x000 (lone high) -> ('Linear', 0, 10, 500)
+  PASS Linear 0x000 (gap present) -> ('Linear', 0, 10, 500)
+  PASS GateTX 0xABCDEF -> ('GateTX', 11259375, 24, 350)
+  PASS GateTX 0x800001 -> ('GateTX', 8388609, 24, 350)
+  PASS GateTX 0x000000 -> ('GateTX', 0, 24, 350)
+  PASS GateTX 0xFFFFFF -> ('GateTX', 16777215, 24, 350)
+  PASS GateTX 0x123456 -> ('GateTX', 1193046, 24, 350)
+  PASS Ansonic 0xABC (FM) -> ('Ansonic', 2748, 12, 555)
+  PASS Ansonic 0x801 (FM) -> ('Ansonic', 2049, 12, 555)
+  PASS Ansonic 0x000 (FM) -> ('Ansonic', 0, 12, 555)
+  PASS Ansonic 0xFFF (FM) -> ('Ansonic', 4095, 12, 555)
+  PASS Ansonic 0x555 (FM) -> ('Ansonic', 1365, 12, 555)
+  PASS Ansonic waveform under AM capture does not decode -> None
+== NEW protocols tolerance (within window) ==
+  PASS Linear jitter +5% -> ('Linear', 683, 10, 500)
+  PASS Linear jitter +10% -> ('Linear', 683, 10, 500)
+  PASS Linear jitter +20% -> ('Linear', 683, 10, 500)
+  PASS Linear jitter -5% -> ('Linear', 683, 10, 500)
+  PASS Linear jitter -10% -> ('Linear', 683, 10, 500)
+  PASS Linear jitter -20% -> ('Linear', 683, 10, 500)
+  PASS GateTX jitter +5% -> ('GateTX', 11259375, 24, 350)
+  PASS GateTX jitter +10% -> ('GateTX', 11259375, 24, 350)
+  PASS GateTX jitter -5% -> ('GateTX', 11259375, 24, 350)
+  PASS GateTX jitter -10% -> ('GateTX', 11259375, 24, 350)
+  PASS Ansonic jitter +5% (FM) -> ('Ansonic', 2748, 12, 555)
+  PASS Ansonic jitter +10% (FM) -> ('Ansonic', 2748, 12, 555)
+  PASS Ansonic jitter -5% (FM) -> ('Ansonic', 2748, 12, 555)
+  PASS Ansonic jitter -10% (FM) -> ('Ansonic', 2748, 12, 555)
+== CROSS false-positive: each protocol classified as ITSELF, not a sibling ==
+  PASS Linear not mis-read -> Linear
+  PASS GateTX not CAME/Nice -> GateTX
+  PASS Ansonic not Nice/CAME -> Ansonic
+  PASS CAME-24 still CAME (not GateTX) -> CAME
+  PASS Nice-12 still Nice (not GateTX/Ansonic) -> NiceFlo
+  PASS Holtek-40 still Holtek -> Holtek
+  PASS Princeton-24 still Princeton (not Linear) -> Princeton
+== NEW encoders match INDEPENDENT spec frame ==
+  PASS Linear encode == spec
+  PASS GateTX encode == spec
+  PASS Ansonic encode == spec
+== NEW bit order MSB-first ==
+  PASS GateTX MSB bit of 0x800001 is 1 -> [-700, 350]
+  PASS GateTX LSB bit of 0x800001 is 1 -> [-700, 350]
+  PASS GateTX second bit of 0x800001 is 0 -> [-350, 700]
+  PASS Ansonic MSB bit of 0x801 is 1 (L short,H long) -> [-555, 1111]
+  PASS Ansonic LSB bit of 0x801 is 1 -> [-555, 1111]
+  PASS Linear MSB bit of 0x200 is 1 (H long,L short) -> [1500, -500]
+== NEW round-trip encode->capture->decode ==
+  PASS GateTX round-trip -> ('GateTX', 986895, 24, 350)
+  PASS Ansonic round-trip -> ('Ansonic', 1445, 12, 555)
+  PASS Linear round-trip (gap present) -> ('Linear', 333, 10, 500)
+== Doitrand / Phoenix_V2 decode + tolerance + cross + round-trip ==
+  PASS Doitrand 0x0123456789 -> ('Doitrand', 4886718345, 37, 400)
+  PASS Doitrand 0x1FFFFFFFFF -> ('Doitrand', 137438953471, 37, 400)
+  PASS Doitrand 0x0000000001 -> ('Doitrand', 1, 37, 400)
+  PASS Doitrand 0x1555555555 -> ('Doitrand', 91625968981, 37, 400)
+  PASS Phoenix_V2 0x0ABCDEF012345 -> ('Phoenix_V2', 188900966474565, 52, 427)
+  PASS Phoenix_V2 0xFFFFFFFFFFFFF -> ('Phoenix_V2', 4503599627370495, 52, 427)
+  PASS Phoenix_V2 0x0000000000001 -> ('Phoenix_V2', 1, 52, 427)
+  PASS Phoenix_V2 0x8000000000000 -> ('Phoenix_V2', 2251799813685248, 52, 427)
+  PASS Doitrand jitter +5% -> ('Doitrand', 4886718345, 37, 400)
+  PASS Doitrand jitter +10% -> ('Doitrand', 4886718345, 37, 400)
+  PASS Doitrand jitter -5% -> ('Doitrand', 4886718345, 37, 400)
+  PASS Doitrand jitter -10% -> ('Doitrand', 4886718345, 37, 400)
+  PASS Phoenix_V2 jitter +5% -> ('Phoenix_V2', 188900966474565, 52, 427)
+  PASS Phoenix_V2 jitter -5% -> ('Phoenix_V2', 188900966474565, 52, 427)
+  PASS Doitrand not mis-read
+  PASS Phoenix_V2 not mis-read
+  PASS CAME-24 still CAME (not Doitrand)
+  PASS Nice-12 still Nice
+  PASS GateTX still GateTX (not Doitrand)
+  PASS Doitrand encode == spec
+  PASS Phoenix_V2 encode == spec
+  PASS Doitrand round-trip -> ('Doitrand', 4042322160, 37, 400)
+  PASS Phoenix_V2 round-trip -> ('Phoenix_V2', 99344109427290, 52, 427)
+== Clemsa (18-bit, HIGH-first 7:1) decode + tolerance + cross + round-trip ==
+  PASS Clemsa 0x3FFFF -> ('Clemsa', 262143, 18, 385)
+  PASS Clemsa 0x00001 -> ('Clemsa', 1, 18, 385)
+  PASS Clemsa 0x20000 -> ('Clemsa', 131072, 18, 385)
+  PASS Clemsa 0x15555 -> ('Clemsa', 87381, 18, 385)
+  PASS Clemsa 0x2AAAA -> ('Clemsa', 174762, 18, 385)
+  PASS Clemsa jitter +5% -> ('Clemsa', 174908, 18, 385)
+  PASS Clemsa jitter +10% -> ('Clemsa', 174908, 18, 385)
+  PASS Clemsa jitter -5% -> ('Clemsa', 174908, 18, 385)
+  PASS Clemsa jitter -10% -> ('Clemsa', 174908, 18, 385)
+  PASS Clemsa not mis-read
+  PASS Linear still Linear (not Clemsa)
+  PASS Princeton still Princeton (not Clemsa)
+  PASS Phoenix_V2 still itself (Clemsa doesn't steal)
+  PASS Clemsa encode == spec
+  PASS Clemsa round-trip (gap present) -> ('Clemsa', 85294, 18, 385)
+== FALSE POSITIVE re-sweep with ALL decoders, both modulations ==
+  PASS 50000 random bursts AM set (8 protocols): 0 false
+  PASS 50000 random bursts FM set (Ansonic): 0 false
+== encoder BOUNDS (mirror of the C cap/bit guards) ==
+  PASS GateTX-24 => 50 elems
+  PASS Ansonic-12 => 26 elems
+  PASS Holtek-40 => 82 elems
+  PASS CAME-42 => 86 elems
+  PASS Linear-10 => 20 elems
+  PASS Princeton-24 => 50 elems
+  PASS Doitrand-37 => 76 elems
+  PASS Phoenix_V2-52 => 106 elems
+  PASS Clemsa-18 => 36 elems
+  PASS PWM bits>64 rejected
+  PASS all max frames <= 1024
+  PASS GateTX rejected when cap<50
+  PASS Linear rejected when cap<20
+  PASS Princeton rejected when cap<50
+  PASS PWM bits=43 accepted (cap now 64)
+  PASS PWM bits==0 rejected
+  PASS Linear bits>32 rejected
+
+RESULT: ALL PASS
+
+########## test_subghz_logic ##########
+== brute bit-size validation ==
+  PASS CAME 12 bits -> 0..4095
+  PASS 20 bits -> 0..1048575 (max)
+  PASS Princeton 24 bits rejected (>20)
+  PASS Holtek 40 bits rejected (>20)
+  PASS 0 bits rejected
+== brute full run / done ==
+  PASS 0..9 full -> sent=10 idx=10 DONE
+  PASS repeats=2 -> [0, 0, 1, 1, 2, 2, 3, 3] idx=4 DONE
+== brute stop + resume: no skip / no double ==
+  PASS stop@4 -> sent=[0, 1, 2, 3] idx=4 STOPPED
+  PASS resume -> sent=[4, 5, 6, 7, 8, 9] idx=10 DONE
+  PASS stop+resume covers every code exactly once (no skip/dup)
+== brute boundary: last code + progress-64 edge ==
+  PASS 0..64 -> 65 codes, idx=65 DONE
+  PASS no duplicate codes across the 64-progress boundary
+== parser: valid single + multiline ==
+  PASS valid -> ('ok', 433920000, 'FuriHalSubGhzPresetOok650Async') n=6
+  PASS multiline accumulates in order -> [100, -100, 200, -200, 300, -300]
+== parser: strict rejections (no silent skip) ==
+  PASS missing Frequency rejected
+  PASS zero Frequency rejected
+  PASS non-numeric token rejects file
+  PASS zero duration rejects file
+  PASS over-range duration rejected
+  PASS <2 values rejected
+  PASS more than cap tokens rejected (not truncated)
+
+RESULT: ALL PASS
+
+########## test_subghz_keyfile ##########
+== Key File save -> classify -> load round-trip ==
+  PASS Princeton bits=24 key=0xABCDEF te=390 -> classify=KEY load=('Princeton', 24, 11259375, 390, 433920000)
+  PASS CAME bits=12 key=0xABC te=0 -> classify=KEY load=('CAME', 12, 2748, 0, 433920000)
+  PASS Holtek bits=40 key=0x5123456789 te=430 -> classify=KEY load=('Holtek', 40, 348484102025, 430, 433920000)
+  PASS NiceFlo bits=12 key=0x1 te=0 -> classify=KEY load=('NiceFlo', 12, 1, 0, 868350000)
+  PASS CAME bits=42 key=0x3FFFFFFFFFF te=0 -> classify=KEY load=('CAME', 42, 4398046511103, 0, 433920000)
+  PASS Holtek bits=40 key=0xFF00000000 te=430 -> classify=KEY load=('Holtek', 40, 1095216660480, 430, 915000000)
+== 64-bit key with top bit set survives exactly ==
+  PASS key 0xABCDEF0123 -> 0xABCDEF0123
+== classify RAW vs KEY vs NONE ==
+  PASS RAW file -> RAW
+  PASS Key file -> KEY
+  PASS no Protocol line -> NONE
+== load_key rejects malformed ==
+  PASS missing Frequency -> reject
+  PASS missing Bit -> reject
+  PASS Bit=0 -> reject
+== load_key STRICT: trailing garbage in numeric fields rejected ==
+  PASS Bit: 12x (trailing junk) -> reject
+  PASS TE: 390abc (trailing junk) -> reject
+  PASS Frequency: 433920000x (trailing junk) -> reject
+  PASS trailing spaces before EOL -> accepted
+  PASS no TE line (optional) -> accepted
+
+RESULT: ALL PASS
+
+########## test_subghz_pipeline ##########
+== P0: full on-air stream (headers 17-21 ms) segments + decodes per frame ==
+  PASS Linear 0x2AB x1 -> 1/1 frames, all == ('Linear', 683, 10)
+  PASS Linear 0x2AB x3 -> 3/3 frames, all == ('Linear', 683, 10)
+  PASS Linear 0x2AB x5 -> 5/5 frames, all == ('Linear', 683, 10)
+  PASS Linear 0x3FF x1 -> 1/1 frames, all == ('Linear', 1023, 10)
+  PASS Linear 0x3FF x3 -> 3/3 frames, all == ('Linear', 1023, 10)
+  PASS Linear 0x3FF x5 -> 5/5 frames, all == ('Linear', 1023, 10)
+  PASS Linear 0x000 x1 -> 1/1 frames, all == ('Linear', 0, 10)
+  PASS Linear 0x000 x3 -> 3/3 frames, all == ('Linear', 0, 10)
+  PASS Linear 0x000 x5 -> 5/5 frames, all == ('Linear', 0, 10)
+  PASS GateTX 0xABCDEF x1 -> 1/1 frames, all == ('GateTX', 11259375, 24)
+  PASS GateTX 0xABCDEF x3 -> 3/3 frames, all == ('GateTX', 11259375, 24)
+  PASS GateTX 0xABCDEF x5 -> 5/5 frames, all == ('GateTX', 11259375, 24)
+  PASS GateTX 0x800001 x1 -> 1/1 frames, all == ('GateTX', 8388609, 24)
+  PASS GateTX 0x800001 x3 -> 3/3 frames, all == ('GateTX', 8388609, 24)
+  PASS GateTX 0x800001 x5 -> 5/5 frames, all == ('GateTX', 8388609, 24)
+  PASS Ansonic 0xABC x1 -> 1/1 frames, all == ('Ansonic', 2748, 12)
+  PASS Ansonic 0xABC x3 -> 3/3 frames, all == ('Ansonic', 2748, 12)
+  PASS Ansonic 0xABC x5 -> 5/5 frames, all == ('Ansonic', 2748, 12)
+  PASS Ansonic 0x801 x1 -> 1/1 frames, all == ('Ansonic', 2049, 12)
+  PASS Ansonic 0x801 x3 -> 3/3 frames, all == ('Ansonic', 2049, 12)
+  PASS Ansonic 0x801 x5 -> 5/5 frames, all == ('Ansonic', 2049, 12)
+  PASS Doitrand 0x123456789 x1 -> 1/1 frames, all == ('Doitrand', 4886718345, 37)
+  PASS Doitrand 0x123456789 x3 -> 3/3 frames, all == ('Doitrand', 4886718345, 37)
+  PASS Doitrand 0x123456789 x5 -> 5/5 frames, all == ('Doitrand', 4886718345, 37)
+  PASS Phoenix_V2 0xABCDEF012345 x1 -> 1/1 frames, all == ('Phoenix_V2', 188900966474565, 52)
+  PASS Phoenix_V2 0xABCDEF012345 x3 -> 3/3 frames, all == ('Phoenix_V2', 188900966474565, 52)
+  PASS Phoenix_V2 0xABCDEF012345 x5 -> 5/5 frames, all == ('Phoenix_V2', 188900966474565, 52)
+  PASS Clemsa 0x2AB3C x1 -> 1/1 frames, all == ('Clemsa', 174908, 18)
+  PASS Clemsa 0x2AB3C x3 -> 3/3 frames, all == ('Clemsa', 174908, 18)
+  PASS Clemsa 0x2AB3C x5 -> 5/5 frames, all == ('Clemsa', 174908, 18)
+== P0: header LOW actually TERMINATES a burst (not merged into the frame) ==
+  PASS 3x GateTX fused? -> 3 separate decodable frames
+  PASS single frame stays whole -> [('GateTX', 986895, 24)]
+== P0: pipeline holds under jitter within tolerance ==
+  PASS GateTX pipeline jitter +5% -> 3 ok
+  PASS GateTX pipeline jitter +10% -> 3 ok
+  PASS GateTX pipeline jitter -5% -> 3 ok
+  PASS GateTX pipeline jitter -10% -> 3 ok
+  PASS Ansonic pipeline jitter +5% -> 3 ok
+  PASS Ansonic pipeline jitter -5% -> 3 ok
+== P0 control: a known-good AM protocol (CAME) survives the same pipeline ==
+  PASS CAME-24 x4 through pipeline -> 4 ok
+== Part C: software splits MANY frames in ONE hardware reception (short gap) ==
+  PASS 5 short-gap frames stay in ONE hardware reception -> 1 rec(s)
+  PASS software splits that reception into 5 frames -> 5
+  PASS all 5 decode identically (no loss/dup) -> 5
+  PASS 4 distinct keys recovered in order -> True
+== Part C: a 9-10 ms gap splits, a long VALID pulse (2.7 ms) does not ==
+  PASS 9 ms low splits into 2 frames
+  PASS 7 ms low splits into 2 frames
+  PASS 2.695 ms valid pulses do NOT split (one frame)
+  PASS a 5.999 ms low is below the frame gap -> no split
+== Part C: a long header ends the PREVIOUS reception, frame data stays intact ==
+  PASS long-header frames intact x3 -> 3
+== Part C: a PARTIAL frame is not reported as a valid decode ==
+  PASS truncated 15/24-bit GateTX -> [None]
+  PASS partial frame without closing gap decodes to None
+== Part C: short-gap SEGMENTATION for Dooya / SMC5326 (no decoder yet) ==
+  PASS Dooya 9.2 ms gap: 4 frames from 1 reception -> 4
+  PASS SMC5326 7.2 ms gap: 4 frames from 1 reception -> 4
+== Part C: regression — the 10 current protocols still 1 frame per reception ==
+  PASS regression Linear 0x2AB x2 -> 2 frames
+  PASS regression Linear 0x3FF x2 -> 2 frames
+  PASS regression Linear 0x000 x2 -> 2 frames
+  PASS regression GateTX 0xABCDEF x2 -> 2 frames
+  PASS regression GateTX 0x800001 x2 -> 2 frames
+  PASS regression Ansonic 0xABC x2 -> 2 frames
+  PASS regression Ansonic 0x801 x2 -> 2 frames
+  PASS regression Doitrand 0x123456789 x2 -> 2 frames
+  PASS regression Phoenix_V2 0xABCDEF012345 x2 -> 2 frames
+  PASS regression Clemsa 0x2AB3C x2 -> 2 frames
+
+RESULT: ALL PASS
+
