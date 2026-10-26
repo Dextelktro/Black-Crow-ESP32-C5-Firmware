@@ -152,6 +152,19 @@ the project targets `esp32c5`.
 cd esp32-c5
 idf.py set-target esp32c5
 idf.py build
+# or use this method if the previous one has problems
+# Firmware build (from the cloned root repo)
+Set-Location ".\esp32-c5"
+
+$compilerBin = "C:\Espressif\tools\tools\riscv32-esp-elf\esp-14.2.0_20241119\riscv32-esp-elf\bin"
+Test-Path "$compilerBin\riscv32-esp-elf-gcc.exe"
+
+$env:PATH = "$compilerBin;$env:PATH"
+$env:IDF_TARGET = "esp32c5"
+
+Get-Command riscv32-esp-elf-gcc.exe
+idf.py reconfigure
+idf.py build
 ```
 
 The custom partition table reserves `0x5F0000` bytes (about 5.94 MiB) for the
