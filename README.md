@@ -221,7 +221,7 @@ This project also ports features from the Unleashed Flipper Zero Firmware (https
 
 ## Contributions
 
-This project is open source. You can help develop it by sending a Pull Request (PR). If you find any bugs or issues, please report them in the Issues section. Every contribution is highly appreciated.
+This project is open source. You can help develop it through the Discord community or by submitting a Pull Request (PR). If you find any bugs or issues, feel free to report them in the Issues section. Every contribution is greatly appreciated.
 
 ## Support
 
