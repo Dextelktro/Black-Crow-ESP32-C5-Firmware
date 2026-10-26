@@ -36,10 +36,11 @@ Firmware and companion controllers for the **ESP32-C5-DevKitC-1** with an
 and 8 MB quad-SPI PSRAM.
 
 <p align="center">
-  <img src="screenshots/radio-c5-dashboard.jpeg" alt="Radio C5 dashboard and device status" width="380">
-  <br>
-  <img src="screenshots/radio-c5-tools.jpeg" alt="Radio C5 tools and radio modules" width="380">
-  <br>
+  <img src="screenshots/radio-c5-dashboard.jpeg" alt="Radio C5 dashboard and device status" width="300">
+  <img src="screenshots/radio-c5-tools.jpeg" alt="Radio C5 tools and radio modules" width="300">
+</p>
+
+<p align="center">
   <a href="https://vt.tiktok.com/ZSg4SdxNa/">Watch the video on TikTok</a>
 </p>
 
