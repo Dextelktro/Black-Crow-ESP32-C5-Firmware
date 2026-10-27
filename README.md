@@ -225,13 +225,16 @@ This project also ports features from the Unleashed Flipper Zero Firmware (https
 
 This project is open source. You can help develop it through the Discord community or by submitting a Pull Request (PR). If you find any bugs or issues, feel free to report them in the Issues section. Every contribution is greatly appreciated.
 
-## Community
+## Community & Support
 
-Join the [Discord server](https://discord.gg/TYxNvFuns) to chat, ask questions, or contribute.
+[![Discord](https://img.shields.io/discord/1561443235505766422?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/TYxNvFuns)
 
-## Support
+Join the [Discord server](https://discord.gg/TYxNvFuns) to follow development updates, ask questions, report issues, or contribute to the project.
 
-If you like this project, join the Discord community and you can help follow and support me on TikTok: [@idextfury](https://www.tiktok.com/@idextfury). Thanks!
+If you find this project useful, you can also support its development by:
+
+- ⭐ Starring this repository
+- 🎥 Following on TikTok: [@idextfury](https://www.tiktok.com/@idextfury)
 
 ## License
 
