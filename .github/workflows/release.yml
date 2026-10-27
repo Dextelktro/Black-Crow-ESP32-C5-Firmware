@@ -100,6 +100,22 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Decode release keystore
+        # Writes the persistent signing keystore + key.properties from repo
+        # secrets, so every release is signed with the SAME certificate.
+        # Without this, build.gradle.kts falls back to a debug keystore that
+        # Gradle regenerates on every fresh CI runner, breaking in-place
+        # updates for users (signature mismatch -> "App not installed").
+        working-directory: flutter
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/blackcrow-release.jks
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=../app/blackcrow-release.jks
+          EOF
+
       - name: Build APK (release, universal)
         working-directory: flutter
         run: |
@@ -232,3 +248,4 @@ jobs:
             > networks you do not own or do not have explicit written
             > permission to test is illegal in most jurisdictions. See the
             > project README for the full ethical-use notice.
+            

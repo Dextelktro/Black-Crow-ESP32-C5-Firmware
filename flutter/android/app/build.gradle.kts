@@ -21,6 +21,14 @@ val flutterSdkVersion = Regex("\"frameworkVersion\"\\s*:\\s*\"([^\"]+)\"")
     ?.get(1)
     ?: throw GradleException("Unable to read Flutter SDK version from $flutterVersionFile")
 
+// Release signing credentials, loaded from key.properties (git-ignored; CI
+// writes this file from secrets before building — see release.yml)
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(keystorePropertiesFile.inputStream())
+}
+
 extensions.configure<ApplicationExtension> {
     namespace = "com.brito.deauther.deauther"
     compileSdk = flutter.compileSdkVersion
@@ -47,11 +55,28 @@ extensions.configure<ApplicationExtension> {
         buildConfigField("String", "FLUTTER_SDK_VERSION", "\"$flutterSdkVersion\"")
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Real release signing when key.properties is present (CI, or a
+            // local release build); falls back to debug signing only when
+            // it's missing (e.g. a contributor's local checkout), so
+            // `flutter run --release` still works out of the box for them.
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
