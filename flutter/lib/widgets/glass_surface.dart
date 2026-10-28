@@ -30,8 +30,8 @@ BoxDecoration glassSurfaceDecoration(
     boxShadow: [
       BoxShadow(
         color: Colors.black.withValues(alpha: 0.28),
-        blurRadius: 18,
-        offset: const Offset(0, 8),
+        blurRadius: 10,
+        offset: const Offset(0, 5),
       ),
     ],
   );
@@ -132,42 +132,48 @@ class _GlassCardState extends State<GlassCard> {
     final borderColor = widget.active && accent != null
         ? accent.withValues(alpha: 0.75)
         : _pressed
-            ? AppColors.accent.withValues(alpha: 0.45)
-            : AppColors.border.withValues(alpha: 0.9);
+        ? AppColors.accent.withValues(alpha: 0.45)
+        : AppColors.border.withValues(alpha: 0.9);
 
+    // Soft lift + optional accent glow. Blur radii are kept deliberately small:
+    // a BoxShadow blur is a gaussian pass (the most expensive paint op), and
+    // these cards live in long scroll lists. Combined with the RepaintBoundary
+    // below, each card rasterizes once and scrolling just composites it.
     final shadows = <BoxShadow>[
       BoxShadow(
         color: Colors.black.withValues(alpha: _pressed ? 0.22 : 0.30),
-        blurRadius: _pressed ? 10 : 20,
-        offset: Offset(0, _pressed ? 3 : 9),
+        blurRadius: _pressed ? 6 : 10,
+        offset: Offset(0, _pressed ? 2 : 5),
       ),
       if (widget.active && accent != null)
         BoxShadow(
           color: accent.withValues(alpha: 0.18),
-          blurRadius: 22,
-          offset: const Offset(0, 4),
+          blurRadius: 14,
+          offset: const Offset(0, 3),
         ),
     ];
 
-    Widget card = AnimatedContainer(
-      duration: const Duration(milliseconds: 130),
-      curve: Curves.easeOut,
-      padding: widget.padding,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            AppColors.surface.withValues(alpha: _pressed ? 0.70 : 0.58),
-            AppColors.surface.withValues(alpha: _pressed ? 0.52 : 0.40),
-          ],
+    Widget card = RepaintBoundary(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 130),
+        curve: Curves.easeOut,
+        padding: widget.padding,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              AppColors.surface.withValues(alpha: _pressed ? 0.70 : 0.58),
+              AppColors.surface.withValues(alpha: _pressed ? 0.52 : 0.40),
+            ],
+          ),
+          borderRadius: br,
+          border: Border.all(color: borderColor),
+          boxShadow: shadows,
         ),
-        borderRadius: br,
-        border: Border.all(color: borderColor),
-        boxShadow: shadows,
+        foregroundDecoration: _sheenDecoration(br, highlight ? 1.5 : 1.0),
+        child: widget.child,
       ),
-      foregroundDecoration: _sheenDecoration(br, highlight ? 1.5 : 1.0),
-      child: widget.child,
     );
 
     if (widget.disabled) {
@@ -262,11 +268,7 @@ class SectionHeader extends StatelessWidget {
 /// Consistent BLE link indicator — a small pill with a status dot. Reused on
 /// every page header so the device state reads the same everywhere (identity).
 class LinkStatusChip extends StatelessWidget {
-  const LinkStatusChip({
-    super.key,
-    required this.connected,
-    this.label,
-  });
+  const LinkStatusChip({super.key, required this.connected, this.label});
 
   final bool connected;
   final String? label;
@@ -305,7 +307,12 @@ class LinkStatusChip extends StatelessWidget {
 /// A small status dot. When [pulsing] it breathes gently — a subtle, functional
 /// signal animation (not decorative neon). One short animation, GPU-cheap.
 class StatusDot extends StatefulWidget {
-  const StatusDot({super.key, required this.color, this.pulsing = false, this.size = 8});
+  const StatusDot({
+    super.key,
+    required this.color,
+    this.pulsing = false,
+    this.size = 8,
+  });
 
   final Color color;
   final bool pulsing;
@@ -351,25 +358,26 @@ class _StatusDotState extends State<StatusDot>
       return _dot(1.0);
     }
     return FadeTransition(
-      opacity: Tween(begin: 0.45, end: 1.0).animate(
-        CurvedAnimation(parent: _c, curve: Curves.easeInOut),
-      ),
+      opacity: Tween(
+        begin: 0.45,
+        end: 1.0,
+      ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
       child: _dot(1.0),
     );
   }
 
   Widget _dot(double glow) => Container(
-        width: widget.size,
-        height: widget.size,
-        decoration: BoxDecoration(
-          color: widget.color,
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: widget.color.withValues(alpha: 0.6 * glow),
-              blurRadius: 7,
-            ),
-          ],
+    width: widget.size,
+    height: widget.size,
+    decoration: BoxDecoration(
+      color: widget.color,
+      shape: BoxShape.circle,
+      boxShadow: [
+        BoxShadow(
+          color: widget.color.withValues(alpha: 0.6 * glow),
+          blurRadius: 7,
         ),
-      );
+      ],
+    ),
+  );
 }

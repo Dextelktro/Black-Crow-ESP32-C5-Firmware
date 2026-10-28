@@ -63,327 +63,369 @@ class _HomeBodyState extends State<HomeBody> {
 
   @override
   Widget build(BuildContext context) {
-    final ctrl = context.watch<DeviceController>();
+    // Read (not watch): the static tool rows below only need the controller to
+    // push routes, so they must NOT rebuild on telemetry. Live cards subscribe
+    // locally via Consumer so a ~20 Hz notification rebuilds only them.
+    final ctrl = context.read<DeviceController>();
     final settings = context.watch<Settings>();
-    final connected = !ctrl.connectionLost;
-    final name = ctrl.conn.device.platformName.isNotEmpty
-        ? ctrl.conn.device.platformName
-        : 'ESP32-C5';
-    final uptime = _fmtUptime(DateTime.now().difference(ctrl.connectedAt));
-    final temperature = ctrl.chipTemperatureC;
-    final temperatureAge = ctrl.chipTemperatureUpdatedAt == null
-        ? null
-        : DateTime.now().difference(ctrl.chipTemperatureUpdatedAt!);
-    final temperatureIsFresh =
-        temperatureAge != null &&
-        temperatureAge < const Duration(milliseconds: 1500);
-    final temperatureColor = temperature == null || !temperatureIsFresh
-        ? Colors.white54
-        : temperature < 35
-        ? const Color(0xFF4FA8FF)
-        : temperature < 44
-        ? const Color(0xFFFFC53D)
-        : const Color(0xFFFF5050);
-    final sysAge = ctrl.sysUpdatedAt == null
-        ? null
-        : DateTime.now().difference(ctrl.sysUpdatedAt!);
-    final sysIsFresh =
-        sysAge != null && sysAge < const Duration(milliseconds: 1000);
 
     return ListView(
       padding: const EdgeInsets.all(14),
       children: [
-        DeviceIssueBanner(controller: ctrl),
+        // ── Live telemetry block ─────────────────────────────
+        // Only this subtree is subscribed to DeviceController, so its frequent
+        // notifications rebuild just these three cards — not the whole list —
+        // which is what keeps scrolling smooth during a live connection.
+        Consumer<DeviceController>(
+          builder: (context, ctrl, _) {
+            final connected = !ctrl.connectionLost;
+            final name = ctrl.conn.device.platformName.isNotEmpty
+                ? ctrl.conn.device.platformName
+                : 'ESP32-C5';
+            final uptime = _fmtUptime(
+              DateTime.now().difference(ctrl.connectedAt),
+            );
+            final temperature = ctrl.chipTemperatureC;
+            final temperatureAge = ctrl.chipTemperatureUpdatedAt == null
+                ? null
+                : DateTime.now().difference(ctrl.chipTemperatureUpdatedAt!);
+            final temperatureIsFresh =
+                temperatureAge != null &&
+                temperatureAge < const Duration(milliseconds: 1500);
+            final temperatureColor = temperature == null || !temperatureIsFresh
+                ? Colors.white54
+                : temperature < 35
+                ? const Color(0xFF4FA8FF)
+                : temperature < 44
+                ? const Color(0xFFFFC53D)
+                : const Color(0xFFFF5050);
+            final sysAge = ctrl.sysUpdatedAt == null
+                ? null
+                : DateTime.now().difference(ctrl.sysUpdatedAt!);
+            final sysIsFresh =
+                sysAge != null && sysAge < const Duration(milliseconds: 1000);
 
-        // ── Link + CPU load hero card ────────────────────────
-        GlassCard(
-          padding: const EdgeInsets.all(18),
-          radius: AppRadius.hero,
-          accent: _kAccent,
-          active: true,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    connected
-                        ? Icons.bluetooth_connected
-                        : Icons.bluetooth_disabled,
-                    color: connected ? _kAccent : const Color(0xFFFF5050),
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      name,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  LinkStatusChip(connected: connected),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                connected ? 'Connected · $uptime' : 'Disconnected',
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.28),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.speed, color: _kAccent, size: 16),
-                    const SizedBox(width: 7),
-                    const Text(
-                      'BLE RATE',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      connected
-                          ? 'RX ${_formatDataRate(ctrl.rxBytesPerSecond)}  ·  TX ${_formatDataRate(ctrl.txBytesPerSecond)}'
-                          : 'RX --  ·  TX --',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    sysAge == null ? '--' : '${ctrl.cpuUsagePercent}%',
-                    style: const TextStyle(
-                      color: _kAccent,
-                      fontSize: 52,
-                      height: 1,
-                      fontWeight: FontWeight.w800,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'CPU LOAD',
-                          style: TextStyle(color: Colors.white54, fontSize: 14),
-                        ),
-                        Text(
-                          sysAge == null
-                              ? 'WAITING'
-                              : sysIsFresh
-                              ? 'LIVE · ${sysAge.inMilliseconds} ms'
-                              : 'STALE · ${sysAge.inSeconds}s',
-                          style: TextStyle(
-                            color: sysIsFresh ? _kAccent : Colors.white38,
-                            fontSize: 9,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.8,
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                DeviceIssueBanner(controller: ctrl),
+
+                // ── Link + CPU load hero card ────────────────────────
+                GlassCard(
+                  padding: const EdgeInsets.all(18),
+                  radius: AppRadius.hero,
+                  accent: _kAccent,
+                  active: true,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            connected
+                                ? Icons.bluetooth_connected
+                                : Icons.bluetooth_disabled,
+                            color: connected
+                                ? _kAccent
+                                : const Color(0xFFFF5050),
+                            size: 20,
                           ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              name,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          LinkStatusChip(connected: connected),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        connected ? 'Connected · $uptime' : 'Disconnected',
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12,
                         ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.4),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: _kAccent.withValues(alpha: 0.3),
                       ),
-                    ),
-                    child: Text(
-                      ctrl.activity,
-                      style: const TextStyle(
-                        color: _kAccent,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.4,
-                        fontFamily: 'monospace',
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.28),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.speed, color: _kAccent, size: 16),
+                            const SizedBox(width: 7),
+                            const Text(
+                              'BLE RATE',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                            const Spacer(),
+                            Text(
+                              connected
+                                  ? 'RX ${_formatDataRate(ctrl.rxBytesPerSecond)}  ·  TX ${_formatDataRate(ctrl.txBytesPerSecond)}'
+                                  : 'RX --  ·  TX --',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
+                      const SizedBox(height: 16),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            sysAge == null ? '--' : '${ctrl.cpuUsagePercent}%',
+                            style: const TextStyle(
+                              color: _kAccent,
+                              fontSize: 52,
+                              height: 1,
+                              fontWeight: FontWeight.w800,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'CPU LOAD',
+                                  style: TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                Text(
+                                  sysAge == null
+                                      ? 'WAITING'
+                                      : sysIsFresh
+                                      ? 'LIVE · ${sysAge.inMilliseconds} ms'
+                                      : 'STALE · ${sysAge.inSeconds}s',
+                                  style: TextStyle(
+                                    color: sysIsFresh
+                                        ? _kAccent
+                                        : Colors.white38,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.8,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Spacer(),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.4),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: _kAccent.withValues(alpha: 0.3),
+                              ),
+                            ),
+                            child: Text(
+                              ctrl.activity,
+                              style: const TextStyle(
+                                color: _kAccent,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.4,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: const [
+                          _DeviceSpecBadge(
+                            icon: Icons.wifi,
+                            label: '2.4 + 5 GHz',
+                          ),
+                          _DeviceSpecBadge(
+                            icon: Icons.memory,
+                            label: 'RISC-V CPU',
+                          ),
+                          _DeviceSpecBadge(
+                            icon: Icons.bluetooth,
+                            label: 'NimBLE',
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: const [
-                  _DeviceSpecBadge(icon: Icons.wifi, label: '2.4 + 5 GHz'),
-                  _DeviceSpecBadge(icon: Icons.memory, label: 'RISC-V CPU'),
-                  _DeviceSpecBadge(icon: Icons.bluetooth, label: 'NimBLE'),
-                ],
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
+                ),
+                const SizedBox(height: 14),
 
-        GlassCard(
-          padding: const EdgeInsets.all(16),
-          accent: temperatureColor,
-          active: true,
-          child: Row(
-            children: [
-              TweenAnimationBuilder<Color?>(
-                tween: ColorTween(end: temperatureColor),
-                duration: const Duration(milliseconds: 450),
-                curve: Curves.easeInOut,
-                builder: (context, color, child) =>
-                    Icon(Icons.thermostat, color: color, size: 28),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'CHIP TEMPERATURE',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.3,
+                GlassCard(
+                  padding: const EdgeInsets.all(16),
+                  accent: temperatureColor,
+                  active: true,
+                  child: Row(
+                    children: [
+                      TweenAnimationBuilder<Color?>(
+                        tween: ColorTween(end: temperatureColor),
+                        duration: const Duration(milliseconds: 450),
+                        curve: Curves.easeInOut,
+                        builder: (context, color, child) =>
+                            Icon(Icons.thermostat, color: color, size: 28),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      temperatureAge == null
-                          ? 'Waiting for sensor data'
-                          : temperatureIsFresh
-                          ? 'LIVE · received ${temperatureAge.inMilliseconds} ms ago'
-                          : 'STALE · last received ${temperatureAge.inSeconds}s ago',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 11,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'CHIP TEMPERATURE',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.3,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              temperatureAge == null
+                                  ? 'Waiting for sensor data'
+                                  : temperatureIsFresh
+                                  ? 'LIVE · received ${temperatureAge.inMilliseconds} ms ago'
+                                  : 'STALE · last received ${temperatureAge.inSeconds}s ago',
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 11,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            const Text(
+                              'Die sensor · driver error <2°C (20–100°C) · 4 Hz',
+                              style: TextStyle(
+                                color: Colors.white38,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 3),
-                    const Text(
-                      'Die sensor · driver error <2°C (20–100°C) · 4 Hz',
-                      style: TextStyle(color: Colors.white38, fontSize: 10),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      AnimatedDefaultTextStyle(
+                        duration: const Duration(milliseconds: 450),
+                        curve: Curves.easeInOut,
+                        style: TextStyle(
+                          color: temperatureColor,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w800,
+                          fontFamily: 'monospace',
+                        ),
+                        child: Text(
+                          temperature == null
+                              ? '--.-°C'
+                              : '${temperature.toStringAsFixed(1)}°C',
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 450),
-                curve: Curves.easeInOut,
-                style: TextStyle(
-                  color: temperatureColor,
-                  fontSize: 24,
-                  fontWeight: FontWeight.w800,
-                  fontFamily: 'monospace',
-                ),
-                child: Text(
-                  temperature == null
-                      ? '--.-°C'
-                      : '${temperature.toStringAsFixed(1)}°C',
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
+                const SizedBox(height: 14),
 
-        // ── System memory / storage card ─────────────────────
-        GlassCard(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.memory,
-                    color: sysIsFresh ? _kAccent : Colors.white54,
-                    size: 20,
+                // ── System memory / storage card ─────────────────────
+                GlassCard(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.memory,
+                            color: sysIsFresh ? _kAccent : Colors.white54,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'STORAGE',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.3,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            sysAge == null
+                                ? 'Waiting…'
+                                : sysIsFresh
+                                ? 'LIVE'
+                                : 'STALE ${sysAge.inSeconds}s',
+                            style: TextStyle(
+                              color: sysIsFresh ? _kAccent : Colors.white38,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      _MemoryRow(
+                        label: 'RAM (internal)',
+                        free: ctrl.sysHeapFree,
+                        total: ctrl.sysHeapTotal,
+                        color: AppColors.accent,
+                        fresh: sysIsFresh,
+                      ),
+                      const SizedBox(height: 10),
+                      _MemoryRow(
+                        label: 'PSRAM',
+                        free: ctrl.sysPsramFree,
+                        total: ctrl.sysPsramTotal,
+                        color: const Color(0xFF9B8CFF),
+                        fresh: sysIsFresh,
+                      ),
+                      const SizedBox(height: 10),
+                      _MemoryRow(
+                        label: 'Flash (storage)',
+                        free: ctrl.sysFlashFree,
+                        total: ctrl.sysFlashTotal,
+                        color: const Color(0xFF4FA8FF),
+                        fresh: sysIsFresh,
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  const Text(
-                    'STORAGE',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.3,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    sysAge == null
-                        ? 'Waiting…'
-                        : sysIsFresh
-                        ? 'LIVE'
-                        : 'STALE ${sysAge.inSeconds}s',
-                    style: TextStyle(
-                      color: sysIsFresh ? _kAccent : Colors.white38,
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              _MemoryRow(
-                label: 'RAM (internal)',
-                free: ctrl.sysHeapFree,
-                total: ctrl.sysHeapTotal,
-                color: AppColors.accent,
-                fresh: sysIsFresh,
-              ),
-              const SizedBox(height: 10),
-              _MemoryRow(
-                label: 'PSRAM',
-                free: ctrl.sysPsramFree,
-                total: ctrl.sysPsramTotal,
-                color: const Color(0xFF9B8CFF),
-                fresh: sysIsFresh,
-              ),
-              const SizedBox(height: 10),
-              _MemoryRow(
-                label: 'Flash (storage)',
-                free: ctrl.sysFlashFree,
-                total: ctrl.sysFlashTotal,
-                color: const Color(0xFF4FA8FF),
-                fresh: sysIsFresh,
-              ),
-            ],
-          ),
+                ),
+              ],
+            );
+          },
         ),
         const SizedBox(height: 12),
 
@@ -396,27 +438,30 @@ class _HomeBodyState extends State<HomeBody> {
           onTap: () => _push(context, ctrl, const FsBrowserScreen()),
         ),
         const SizedBox(height: 10),
-        _ToolRow(
-          icon: ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
-          leadingWidget: ctrl.sdBusy
-              ? const _SyncIndicator()
-              : Icon(
-                  ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
-                  color: ctrl.sdPresent
-                      ? const Color(0xFF4FA8FF)
-                      : Colors.amber,
-                  size: 24,
-                ),
-          color: ctrl.sdPresent ? const Color(0xFF4FA8FF) : Colors.amber,
-          title: 'SD Card',
-          subtitle: ctrl.sdBusy
-              ? 'Synchronizing · ${ctrl.sdTransferSentBytes} bytes transferred'
-              : ctrl.sdPresent
-              ? ctrl.sdMounted
-                    ? '${_fmtBytes(ctrl.sdFree)} free / ${_fmtBytes(ctrl.sdTotal)} · tap to browse'
-                    : 'Card detected · tap to mount or inspect'
-              : 'No card detected',
-          onTap: () => _push(context, ctrl, const SdStorageScreen()),
+        // SD card row shows live mount/transfer state → subscribe locally.
+        Consumer<DeviceController>(
+          builder: (context, ctrl, _) => _ToolRow(
+            icon: ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
+            leadingWidget: ctrl.sdBusy
+                ? const _SyncIndicator()
+                : Icon(
+                    ctrl.sdPresent ? Icons.sd_storage : Icons.help_outline,
+                    color: ctrl.sdPresent
+                        ? const Color(0xFF4FA8FF)
+                        : Colors.amber,
+                    size: 24,
+                  ),
+            color: ctrl.sdPresent ? const Color(0xFF4FA8FF) : Colors.amber,
+            title: 'SD Card',
+            subtitle: ctrl.sdBusy
+                ? 'Synchronizing · ${ctrl.sdTransferSentBytes} bytes transferred'
+                : ctrl.sdPresent
+                ? ctrl.sdMounted
+                      ? '${_fmtBytes(ctrl.sdFree)} free / ${_fmtBytes(ctrl.sdTotal)} · tap to browse'
+                      : 'Card detected · tap to mount or inspect'
+                : 'No card detected',
+            onTap: () => _push(context, ctrl, const SdStorageScreen()),
+          ),
         ),
         const SizedBox(height: 14),
         _ToolRow(
@@ -485,37 +530,50 @@ class _HomeBodyState extends State<HomeBody> {
           onTap: () => _push(context, ctrl, const BleScanScreen()),
         ),
         const SizedBox(height: 10),
-        _ToolRow(
-          icon: Icons.bolt,
-          color: Colors.red.shade400,
-          title: 'Nuke',
-          active: ctrl.attacking && ctrl.attackMode == 'nuke',
-          subtitle: ctrl.attacking && ctrl.attackMode == 'nuke'
-              ? 'RUNNING · tap to manage or stop'
-              : 'Launch the radar and manage its current operation',
-          onTap: () => _push(context, ctrl, const NukeScreen()),
+        // Attack rows reflect live run state → subscribe locally.
+        Consumer<DeviceController>(
+          builder: (context, ctrl, _) {
+            final running = ctrl.attacking && ctrl.attackMode == 'nuke';
+            return _ToolRow(
+              icon: Icons.bolt,
+              color: Colors.red.shade400,
+              title: 'Nuke',
+              active: running,
+              subtitle: running
+                  ? 'RUNNING · tap to manage or stop'
+                  : 'Launch the radar and manage its current operation',
+              onTap: () => _push(context, ctrl, const NukeScreen()),
+            );
+          },
         ),
         const SizedBox(height: 10),
-        _ToolRow(
-          icon: Icons.wifi_tethering,
-          color: const Color(0xFFFF4800),
-          title: 'Deauth All',
-          active: ctrl.attacking && ctrl.attackMode == 'deauthall',
-          subtitle: ctrl.attacking && ctrl.attackMode == 'deauthall'
-              ? 'RUNNING · tap to manage or stop'
-              : 'Manage channel-hopping operation and rescan options',
-          onTap: () => _push(context, ctrl, const DeauthAllScreen()),
+        Consumer<DeviceController>(
+          builder: (context, ctrl, _) {
+            final running = ctrl.attacking && ctrl.attackMode == 'deauthall';
+            return _ToolRow(
+              icon: Icons.wifi_tethering,
+              color: const Color(0xFFFF4800),
+              title: 'Deauth All',
+              active: running,
+              subtitle: running
+                  ? 'RUNNING · tap to manage or stop'
+                  : 'Manage channel-hopping operation and rescan options',
+              onTap: () => _push(context, ctrl, const DeauthAllScreen()),
+            );
+          },
         ),
         const SizedBox(height: 10),
-        _ToolRow(
-          icon: Icons.bluetooth,
-          color: const Color(0xFF39FF14),
-          title: 'BLE Spam',
-          active: ctrl.bleSpamRunning,
-          subtitle: ctrl.bleSpamRunning
-              ? 'RUNNING · ${ctrl.bleSpamType?.label ?? 'mode'}'
-              : 'Choose and manage BLE advertising modes',
-          onTap: () => _push(context, ctrl, const BleSpamScreen()),
+        Consumer<DeviceController>(
+          builder: (context, ctrl, _) => _ToolRow(
+            icon: Icons.bluetooth,
+            color: const Color(0xFF39FF14),
+            title: 'BLE Spam',
+            active: ctrl.bleSpamRunning,
+            subtitle: ctrl.bleSpamRunning
+                ? 'RUNNING · ${ctrl.bleSpamType?.label ?? 'mode'}'
+                : 'Choose and manage BLE advertising modes',
+            onTap: () => _push(context, ctrl, const BleSpamScreen()),
+          ),
         ),
         const SizedBox(height: 10),
         _ToolRow(

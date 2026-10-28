@@ -7,8 +7,11 @@ import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
 import '../services/settings.dart';
+import '../theme/app_theme.dart';
+import '../widgets/glass_surface.dart';
 
-const _accent = Color(0xFF2EE6C5);
+// Unified with the design-system identity hue (was a one-off cyan).
+const _accent = AppColors.accent;
 const _platform = MethodChannel('deauther/platform');
 const _maxUploadFiles = 512;
 const _maxUploadDirectories = 2048;
@@ -380,7 +383,7 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
                       const SizedBox(height: 8),
                       Container(
                         decoration: BoxDecoration(
-                          color: const Color(0xFF1A2631),
+                          color: AppColors.surfaceHigh,
                           borderRadius: BorderRadius.circular(14),
                           border: Border.all(
                             color: _accent.withValues(alpha: .3),
@@ -450,7 +453,7 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
                     const SizedBox(height: 12),
                     Container(
                       decoration: BoxDecoration(
-                        color: const Color(0x222EE6C5),
+                        color: _accent.withValues(alpha: 0.13),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       padding: const EdgeInsets.all(12),
@@ -916,13 +919,57 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
     required String subtitle,
     required VoidCallback? onTap,
   }) {
-    return Card(
-      child: ListTile(
-        leading: Icon(icon, color: onTap == null ? Colors.white38 : _accent),
-        title: Text(title),
-        subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_right),
+    final enabled = onTap != null;
+    final color = enabled ? _accent : AppColors.textFaint;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: GlassCard(
         onTap: onTap,
+        disabled: !enabled,
+        padding: const EdgeInsets.all(14),
+        radius: AppRadius.tile,
+        accent: _accent,
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: color, size: 24),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      color: AppColors.textDim,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              color: enabled ? color : AppColors.textFaint,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -962,52 +1009,49 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
         padding: const EdgeInsets.all(14),
         children: [
           if (isXiao) _UnsupportedBoardNotice(board: BoardVariant.xiao),
-          Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF193B42), Color(0xFF17222D)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: _accent.withValues(alpha: .28)),
-            ),
-            padding: const EdgeInsets.all(18),
-            child: Row(
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: const BoxDecoration(
-                    color: Color(0x332EE6C5),
-                    shape: BoxShape.circle,
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: GlassCard(
+              padding: const EdgeInsets.all(18),
+              radius: AppRadius.hero,
+              accent: _accent,
+              active: true,
+              child: Row(
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: _accent.withValues(alpha: 0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.memory, color: _accent),
                   ),
-                  child: const Icon(Icons.memory, color: _accent),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'UART FLASH CONSOLE',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: _accent,
-                          letterSpacing: 1.4,
-                          fontWeight: FontWeight.w700,
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'UART FLASH CONSOLE',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
+                                color: _accent,
+                                letterSpacing: 1.4,
+                                fontWeight: FontWeight.w700,
+                              ),
                         ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Up to 3 images · verified where supported',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                    ],
+                        const SizedBox(height: 4),
+                        Text(
+                          'Up to 3 images · verified where supported',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const Icon(Icons.shield_outlined, color: Colors.white60),
-              ],
+                  const Icon(Icons.shield_outlined, color: AppColors.textDim),
+                ],
+              ),
             ),
           ),
           _option(
@@ -1043,124 +1087,120 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
           ),
           if (controller.espFlashRemoteUploadId != null) ...[
             const SizedBox(height: 8),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Remote upload needs recovery',
-                      style: TextStyle(
-                        color: _accent,
-                        fontWeight: FontWeight.bold,
-                      ),
+            GlassCard(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Remote upload needs recovery',
+                    style: TextStyle(
+                      color: _accent,
+                      fontWeight: FontWeight.bold,
                     ),
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(
-                      value: controller.espFlashRemoteUploadSize == 0
-                          ? null
-                          : (controller.espFlashRemoteUploadOffset /
-                                    controller.espFlashRemoteUploadSize)
-                                .clamp(0.0, 1.0)
-                                .toDouble(),
+                  ),
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    value: controller.espFlashRemoteUploadSize == 0
+                        ? null
+                        : (controller.espFlashRemoteUploadOffset /
+                                  controller.espFlashRemoteUploadSize)
+                              .clamp(0.0, 1.0)
+                              .toDouble(),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Upload ${controller.espFlashRemoteUploadId}: '
+                    '${controller.espFlashRemoteUploadOffset} / '
+                    '${controller.espFlashRemoteUploadSize} bytes. '
+                    'Cancel removes the incomplete .part file.',
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () =>
+                          _run(controller.espFlashCancelRemoteUpload),
+                      child: const Text('Cancel remote upload'),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Upload ${controller.espFlashRemoteUploadId}: '
-                      '${controller.espFlashRemoteUploadOffset} / '
-                      '${controller.espFlashRemoteUploadSize} bytes. '
-                      'Cancel removes the incomplete .part file.',
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () =>
-                            _run(controller.espFlashCancelRemoteUpload),
-                        child: const Text('Cancel remote upload'),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ],
           if (controller.espFlashState != 'idle' &&
               !controller.espFlashUploading) ...[
             const SizedBox(height: 8),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+            GlassCard(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Flash ${controller.espFlashState.toUpperCase()}',
+                    style: const TextStyle(
+                      color: _accent,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (controller.espFlashImageBytes > 0)
+                    LinearProgressIndicator(
+                      value:
+                          (controller.espFlashProgrammedBytes /
+                                  controller.espFlashImageBytes)
+                              .clamp(0.0, 1.0)
+                              .toDouble(),
+                    ),
+                  if (controller.espFlashImageBytes > 0) ...[
+                    const SizedBox(height: 6),
                     Text(
-                      'Flash ${controller.espFlashState.toUpperCase()}',
-                      style: const TextStyle(
-                        color: _accent,
-                        fontWeight: FontWeight.bold,
+                      '${(100 * controller.espFlashProgrammedBytes / controller.espFlashImageBytes).clamp(0, 100).round()}% · '
+                      '${controller.espFlashProgrammedBytes} / '
+                      '${controller.espFlashImageBytes} bytes',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Text(controller.espFlashMessage),
+                  if (recentFlashLogs.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: AppColors.bg,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.all(10),
+                      child: SelectableText(
+                        recentFlashLogs.join('\n'),
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                          color: AppColors.textDim,
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    if (controller.espFlashImageBytes > 0)
-                      LinearProgressIndicator(
-                        value:
-                            (controller.espFlashProgrammedBytes /
-                                    controller.espFlashImageBytes)
-                                .clamp(0.0, 1.0)
-                                .toDouble(),
-                      ),
-                    if (controller.espFlashImageBytes > 0) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        '${(100 * controller.espFlashProgrammedBytes / controller.espFlashImageBytes).clamp(0, 100).round()}% · '
-                        '${controller.espFlashProgrammedBytes} / '
-                        '${controller.espFlashImageBytes} bytes',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    Text(controller.espFlashMessage),
-                    if (recentFlashLogs.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Container(
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF0B1118),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        padding: const EdgeInsets.all(10),
-                        child: SelectableText(
-                          recentFlashLogs.join('\n'),
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 11,
-                            color: Colors.white70,
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (controller.espFlashState == 'detecting')
-                      const LinearProgressIndicator(),
-                    if (controller.espFlashState == 'waiting' ||
-                        controller.espFlashState == 'detecting' ||
-                        controller.espFlashState == 'flashing' ||
-                        controller.espFlashState == 'cancelling')
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: controller.espFlashCancelRequested
-                              ? null
-                              : () => _run(controller.espFlashCancelFlash),
-                          child: Text(
-                            controller.espFlashCancelRequested
-                                ? 'Cancelling…'
-                                : 'Cancel flash',
-                          ),
-                        ),
-                      ),
                   ],
-                ),
+                  if (controller.espFlashState == 'detecting')
+                    const LinearProgressIndicator(),
+                  if (controller.espFlashState == 'waiting' ||
+                      controller.espFlashState == 'detecting' ||
+                      controller.espFlashState == 'flashing' ||
+                      controller.espFlashState == 'cancelling')
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: controller.espFlashCancelRequested
+                            ? null
+                            : () => _run(controller.espFlashCancelFlash),
+                        child: Text(
+                          controller.espFlashCancelRequested
+                              ? 'Cancelling…'
+                              : 'Cancel flash',
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ],
@@ -1296,7 +1336,11 @@ class _UnsupportedBoardNotice extends StatelessWidget {
                   'it — the firmware reports "not supported" and the actions below '
                   'will fail. Use the ESP32-C5-DevKitC-1 for this feature, or '
                   'change the board in Settings.',
-                  style: TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
                 ),
               ],
             ),

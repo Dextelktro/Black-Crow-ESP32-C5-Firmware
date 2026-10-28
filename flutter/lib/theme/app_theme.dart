@@ -35,25 +35,58 @@ class AppRadius {
   static const hero = 20.0;
 }
 
+/// Page transition that keeps the Android zoom motion but paints a
+/// **transparent** scrim instead of the opaque `colorScheme.surface` the
+/// default uses — so the global [AppBackground] shows through consistently and
+/// there is no background "flash" on every push. Applied to every platform so
+/// navigation looks the same everywhere.
+const _zoomTransparent = ZoomPageTransitionsBuilder(
+  backgroundColor: Colors.transparent,
+);
+const _appPageTransitions = PageTransitionsTheme(
+  builders: <TargetPlatform, PageTransitionsBuilder>{
+    TargetPlatform.android: _zoomTransparent,
+    TargetPlatform.iOS: _zoomTransparent,
+    TargetPlatform.linux: _zoomTransparent,
+    TargetPlatform.macOS: _zoomTransparent,
+    TargetPlatform.windows: _zoomTransparent,
+    TargetPlatform.fuchsia: _zoomTransparent,
+  },
+);
+
 /// Builds the dark theme. Scaffold is transparent so the global
 /// [AppBackground] (ambient layer) shows through every page.
 ThemeData buildDarkTheme() {
-  final scheme = ColorScheme.fromSeed(
-    seedColor: AppColors.accent,
-    brightness: Brightness.dark,
-  ).copyWith(
-    surface: AppColors.bg,
-    primary: AppColors.accent,
-    outline: AppColors.textFaint,
-    outlineVariant: AppColors.border,
-    error: AppColors.danger,
-  );
+  final scheme =
+      ColorScheme.fromSeed(
+        seedColor: AppColors.accent,
+        brightness: Brightness.dark,
+      ).copyWith(
+        surface: AppColors.bg,
+        // Pin every M3 surface-container role to the palette. Left at the seed
+        // defaults these are mint-tinted dark greens, which is what made menus,
+        // dropdowns and popups flash a different (greenish) background.
+        surfaceContainerLowest: AppColors.bg,
+        surfaceContainerLow: AppColors.surface,
+        surfaceContainer: AppColors.surface,
+        surfaceContainerHigh: AppColors.surfaceHigh,
+        surfaceContainerHighest: AppColors.surfaceHigh,
+        surfaceBright: AppColors.surfaceHigh,
+        surfaceDim: AppColors.bg,
+        onSurface: AppColors.text,
+        onSurfaceVariant: AppColors.textDim,
+        primary: AppColors.accent,
+        outline: AppColors.textFaint,
+        outlineVariant: AppColors.border,
+        error: AppColors.danger,
+      );
 
   return ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
     scaffoldBackgroundColor: Colors.transparent,
     canvasColor: AppColors.bg,
+    pageTransitionsTheme: _appPageTransitions,
     splashColor: AppColors.accent.withValues(alpha: 0.08),
     highlightColor: AppColors.accent.withValues(alpha: 0.05),
     appBarTheme: const AppBarTheme(
@@ -94,6 +127,24 @@ ThemeData buildDarkTheme() {
       modalBackgroundColor: AppColors.surface,
       surfaceTintColor: Colors.transparent,
     ),
+    // Keep every pop-out surface on the palette so opening a menu/dropdown does
+    // not flash the seed-tinted M3 surface.
+    popupMenuTheme: const PopupMenuThemeData(
+      color: AppColors.surface,
+      surfaceTintColor: Colors.transparent,
+    ),
+    dropdownMenuTheme: const DropdownMenuThemeData(
+      menuStyle: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(AppColors.surface),
+        surfaceTintColor: WidgetStatePropertyAll(Colors.transparent),
+      ),
+    ),
+    menuTheme: const MenuThemeData(
+      style: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(AppColors.surface),
+        surfaceTintColor: WidgetStatePropertyAll(Colors.transparent),
+      ),
+    ),
     snackBarTheme: const SnackBarThemeData(
       backgroundColor: AppColors.surfaceHigh,
       contentTextStyle: TextStyle(color: AppColors.text),
@@ -105,12 +156,14 @@ ThemeData buildDarkTheme() {
 ThemeData buildLightTheme() {
   return ThemeData(
     useMaterial3: true,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: AppColors.accent,
-      brightness: Brightness.light,
-    ).copyWith(
-      outline: const Color(0xFF65736E),
-      outlineVariant: AppColors.border,
-    ),
+    colorScheme:
+        ColorScheme.fromSeed(
+          seedColor: AppColors.accent,
+          brightness: Brightness.light,
+        ).copyWith(
+          outline: const Color(0xFF65736E),
+          outlineVariant: AppColors.border,
+        ),
+    pageTransitionsTheme: _appPageTransitions,
   );
 }
