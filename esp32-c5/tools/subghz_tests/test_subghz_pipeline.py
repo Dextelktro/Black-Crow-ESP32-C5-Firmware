@@ -40,12 +40,24 @@ def rssi_recently_qualified(seen_above, last_above_ms, now_ms,
         return True
     return seen_above and now_ms - last_above_ms <= hold_ms
 
-def analyzer_accept(coarse_peak, fine_peak):
-    """Mirror the Flipper-faithful analyzer gate: the wide coarse hop AND the
-    narrow fine scan must both clear the -93 dBm threshold. The narrow fine
-    bandwidth, not a sideband-margin test, is what rejects wideband noise."""
+def analyzer_accept(coarse_peak, fine_peak, coarse_samples=None):
+    """Mirror the analyzer gate: the wide coarse hop AND the narrow fine scan
+    must both clear the absolute -93 dBm threshold, AND the fine peak must rise a
+    margin above the band noise floor (median of the coarse-sweep samples). The
+    floor gate REUSES the coarse sweep, so it adds no scan time; it replaces the
+    slow extra sideband scans (NOISE_NEAR/FAR) that were removed, and restores
+    robustness against a hardware/environment floor the fixed -93 dBm cannot
+    cover on its own (the cause of phantom detections)."""
     minimum_rssi = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_RSSI")
-    return coarse_peak >= minimum_rssi and fine_peak >= minimum_rssi
+    margin = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_MARGIN_DB")
+    min_floor = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES")
+    if coarse_peak < minimum_rssi or fine_peak < minimum_rssi:
+        return False
+    if coarse_samples is not None:
+        valid = sorted(s for s in coarse_samples if s > -128)
+        if len(valid) >= min_floor and fine_peak - valid[len(valid) // 2] < margin:
+            return False   # peak does not stand out from the band floor -> noise
+    return True
 
 def repair_short_glitches(durations, min_us=50):
     """Mirror the decoder-only cleanup: absorb a short interior pulse between
@@ -571,8 +583,11 @@ check("SUBGHZ_ANALYZER_BW_COARSE 0x17" in SUBGHZ_SOURCE and
       "SUBGHZ_ANALYZER_BW_FINE   0xF7" in SUBGHZ_SOURCE,
       "coarse hop uses 650 kHz BW, fine scan uses narrow 58 kHz BW (noise reject)")
 check("SUBGHZ_ANALYZER_NOISE_NEAR_HZ" not in SUBGHZ_SOURCE and
-      "SUBGHZ_ANALYZER_MIN_MARGIN_DB" not in SUBGHZ_SOURCE,
-      "the slow sideband-margin gate is gone (narrow fine BW replaces it)")
+      "SUBGHZ_ANALYZER_NOISE_FAR_HZ" not in SUBGHZ_SOURCE,
+      "the slow extra sideband scans are gone (gate adds no scan time)")
+check("SUBGHZ_ANALYZER_MIN_MARGIN_DB" in SUBGHZ_SOURCE and
+      "SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES" in SUBGHZ_SOURCE,
+      "a cheap band-floor margin gate (reusing the coarse sweep) rejects a noisy floor")
 check(analyzer_accept(-82, -84),
       "analyzer accepts when both coarse and fine clear the threshold")
 check(not analyzer_accept(-82, -96),
@@ -581,6 +596,13 @@ check(not analyzer_accept(-96, -96),
       "a peak below the -93 dBm threshold is rejected")
 check(analyzer_accept(-93, -93),
       "a peak exactly at the threshold is accepted")
+# Relative band-floor gate (reuses the coarse sweep) — the phantom-detection fix.
+check(analyzer_accept(-70, -70, coarse_samples=[-100, -98, -101, -99, -70]),
+      "a carrier well above the band floor is accepted")
+check(not analyzer_accept(-85, -85, coarse_samples=[-86, -84, -85, -87, -85]),
+      "a peak that only matches a uniformly elevated floor is rejected as noise")
+check(analyzer_accept(-80, -80, coarse_samples=[-100, -70]),
+      "with too few valid floor samples, the absolute threshold alone decides")
 print()
 print("RESULT:", "ALL PASS" if FAIL == 0 else f"{FAIL} FAILURES")
 import sys; sys.exit(1 if FAIL else 0)

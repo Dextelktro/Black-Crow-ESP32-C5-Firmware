@@ -48,6 +48,15 @@
 #define SUBGHZ_ANALYZER_MIN_RSSI (-93)   /* SUBGHZ_FREQUENCY_ANALYZER_THRESHOLD */
 #define SUBGHZ_ANALYZER_REFINE_RADIUS_HZ 300000
 #define SUBGHZ_ANALYZER_REFINE_STEP_HZ   20000
+/* A real carrier stands well ABOVE the band noise floor. The absolute -93 dBm
+ * trigger alone is only robust when the hardware/environment floor sits far
+ * below it; on a noisier floor it fires on noise (phantom detections). So the
+ * fine peak must ALSO clear the measured band floor by this margin. The floor
+ * is taken from the coarse sweep already performed, so this costs no extra
+ * scan time. A band-wide elevated floor (wideband noise, no local carrier)
+ * raises peak and floor together and is correctly rejected. */
+#define SUBGHZ_ANALYZER_MIN_MARGIN_DB 8
+#define SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES 3  /* need this many valid coarse hops */
 /* RX bandwidth (MDMCFG4) for the two stages, verbatim from Flipper: wide for the
  * coarse hop, narrow for the fine scan. */
 #define SUBGHZ_ANALYZER_BW_COARSE 0x17   /* 650 kHz (0b00010111) */
@@ -516,12 +525,16 @@ static void analyzer_set_bandwidth(uint8_t mdmcfg4)
 
 static void analyzer_scan(void)
 {
-    /* COARSE: wide 650 kHz, hop the band list, find the strongest frequency. */
+    /* COARSE: wide 650 kHz, hop the band list, find the strongest frequency.
+     * Keep every sample so the band noise floor can be estimated from them. */
     analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_COARSE);
     int peak = SUBGHZ_RSSI_FLOOR;
     uint32_t peakfq = 0;
+    int coarse[SUBGHZ_HOP_N];
+    size_t coarse_n = 0;
     for (size_t i = 0; i < SUBGHZ_HOP_N && s_run; i++) {
         int r = measure_rssi_fast(s_hoplist[i]);
+        coarse[coarse_n++] = r;
         if (r > peak) { peak = r; peakfq = s_hoplist[i]; }
     }
     if (!s_run) return;
@@ -551,12 +564,38 @@ static void analyzer_scan(void)
     analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_COARSE);   /* restore for next pass */
     if (!s_run) return;
 
-    /* The narrow fine scan must ALSO clear the threshold; if it does not, the
-     * wide coarse hit was noise spread across the band, not a real carrier. */
+    /* The narrow fine scan must ALSO clear the absolute threshold; if it does
+     * not, the wide coarse hit was noise spread across the band, not a carrier. */
     if (fine_peak < SUBGHZ_ANALYZER_MIN_RSSI) {
         io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
         return;
     }
+
+    /* Relative gate: the peak must also rise clearly above the band noise floor.
+     * Estimate the floor as the median of the coarse samples (excluding failed
+     * reads); a lone real carrier barely moves the median, so the margin stays
+     * large for a true signal and ~0 for a uniformly noisy band. Only applied
+     * when enough valid samples exist — otherwise fall back to the absolute
+     * threshold rather than reject on a floor we could not measure. */
+    int valid[SUBGHZ_HOP_N];
+    size_t valid_n = 0;
+    for (size_t i = 0; i < coarse_n; i++) {
+        if (coarse[i] > SUBGHZ_RSSI_FLOOR) valid[valid_n++] = coarse[i];
+    }
+    if (valid_n >= SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES) {
+        for (size_t i = 1; i < valid_n; i++) {   /* insertion sort (small n) */
+            int v = valid[i];
+            size_t j = i;
+            while (j > 0 && valid[j - 1] > v) { valid[j] = valid[j - 1]; j--; }
+            valid[j] = v;
+        }
+        int floor_dbm = valid[valid_n / 2];
+        if (fine_peak - floor_dbm < SUBGHZ_ANALYZER_MIN_MARGIN_DB) {
+            io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
+            return;
+        }
+    }
+
     io_log("subghz: ANALYZER peakfq=%lu rssi=%d\r\n",
            (unsigned long)fine_fq, fine_peak);
 }
