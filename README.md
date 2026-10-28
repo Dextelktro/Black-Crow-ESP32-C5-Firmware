@@ -234,4 +234,3 @@ The developer of this project is not responsible for any misuse of this software
 ## License
 
 This project is distributed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for license terms and attribution.
-=======
