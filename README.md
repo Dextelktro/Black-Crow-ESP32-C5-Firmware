@@ -5,10 +5,10 @@
 </p>
 
 <p align="center">
-  <a href="https://padadexxtfury.github.io/Black-Crow-ESP32-Firmware/"><b>🔥 Flash your board straight from the browser — open the Black Crow Web Flasher</b></a>
+  <a href="https://dextelktro.github.io/Black-Crow-ESP32-C5-Firmware/"><b>🔥 Flash your board straight from the browser — open the Black Crow Web Flasher</b></a>
 </p>
 
-> **Web Flasher — https://padadexxtfury.github.io/Black-Crow-ESP32-Firmware/**
+> **Web Flasher — https://dextelktro.github.io/Black-Crow-ESP32-C5-Firmware/**
 > Install the firmware straight from **Chrome** or **Edge** on desktop, with no
 > toolchain and no command line. Pick your board (**ESP32‑C5‑DevKitC‑1** or
 > **Seeed XIAO ESP32‑C5**), select the USB port, then **Erase** / **Start Flash**
