@@ -1,13 +1,11 @@
-## Black Crow Firmware
-
-This firmware is a fork of the original version of the x1watt/esp32 c5 deauth project, https://github.com/x1watt/esp32-c5-deauth, I've completely overhauled this entire firmware. The original firmware only had features like WiFi scan, nuke, WiFi radar on nuke, 2.4GHz/5GHz WiFi attacks, and a few other features. In my first test with the original firmware, the WiFi attacks didn’t work and there were also issues with delay and freezing in the app. That’s when I tried to fix the WiFi attack problems and also address the app delay and freezing issues, completely revamp the firmware and app, and combine new features and improvements into the original components.
+## Black Crow Firmware ESP32 C5
 
 <p align="center">
   <img src="screenshots/black-crow-firmware.jpeg" alt="Black Crow Network and Embedded Experiment Laboratory logo" width="800">
 </p>
 
 <p align="center">
-  <a href="https://padadexxtfury.github.io/Black-Crow-ESP32-Firmware/"><b>🔥 Flash your board in the browser — open the Black Crow Web Flasher</b></a>
+  <a href="https://padadexxtfury.github.io/Black-Crow-ESP32-Firmware/"><b>🔥 Flash your board straight from the browser — open the Black Crow Web Flasher</b></a>
 </p>
 
 > **Web Flasher — https://padadexxtfury.github.io/Black-Crow-ESP32-Firmware/**
@@ -20,29 +18,6 @@ This firmware is a fork of the original version of the x1watt/esp32 c5 deauth pr
 > Pilih board, pilih port USB, lalu **Erase** / **Start Flash** dan buka **serial
 > monitor** bawaan. *Aktifkan GitHub Pages: Settings → Pages → Deploy from a
 > branch → `main` → `/docs` agar tautan di atas aktif.*
-
-# The primary focus of this project includes
-
-Firmware Development — Developing and refining the core firmware to enhance stability and extensibility, while enabling support for various features and additional modules.
-
-Wireless Control — Allowing the device to be fully controlled via a smartphone or desktop application, eliminating the need for an onboard TFT screen, physical buttons, or other local control interfaces.
-
-BLE Communication — Utilizing Bluetooth Low Energy (BLE) with the NimBLE stack as the primary communication channel between the device and the control application.
-
-Hardware Support — Integrating various modules—such as NRF24, CC1101, infrared (IR), and other supporting components—to expand the device's hardware experimentation capabilities.
-
-Wi-Fi and Bluetooth Experimentation — Developing and testing 2.4 GHz Wi-Fi, 5 GHz Wi-Fi, and BLE features, based on the capabilities of the hardware in use, with a focus on learning, protocol analysis, compatibility testing, and experimentation within a safe and controlled environment.
-
-# Reasons for Choosing Smartphone/Desktop-Based Control
-
-Full control via BLE (Bluetooth Low Energy) was selected to enhance device efficiency and flexibility, based on the following considerations:
-Cost Efficiency — Reduces production costs by eliminating the need for a TFT display and physical buttons.
-More Flexible UI — Enables a more complex interface that is easier to develop and user-friendly.
-Power Efficiency — Lowers power consumption by removing display components and physical control systems.
-Practicality and Accessibility — Leverages smartphones or desktop computers that are already part of the user's daily routine.
-Compact Design — Reduces the number of physical components and provides greater freedom in utilizing GPIO pins.
-
-This approach results in a more compact, efficient, and flexible device without compromising ease of control.
 
 # ESP32-C5 Multi-Radio Lab Toolkit
 
@@ -59,40 +34,6 @@ and 8 MB quad-SPI PSRAM.
   <a href="https://vt.tiktok.com/ZSg4y3XAG/">Watch the video on TikTok</a>
 </p>
 
-This is a research and education project. Some firmware modules can transmit
-radio signals or affect nearby devices. Use them only in an isolated lab, with
-equipment and frequencies you are authorized to test. Do not use this project
-to disrupt networks, collect credentials, track people, or interfere with
-devices you do not own or have explicit permission to test. You are responsible
-for complying with local laws and radio regulations.
-
-## ⚠️  Ethical use only
-
-This project is published for **defensive security research and
-education** — penetration testing on networks you own or have explicit
-written permission to assess, security training, capture-the-flag
-exercises, lab demonstrations of Wi-Fi protocol weaknesses, and academic
-study.
-
-Using deauthentication frames against networks you do not own or do not
-have explicit permission to test is **illegal in most jurisdictions**.
-Examples that are NOT covered by this license:
-
-- Interfering with a neighbor's, employer's, café's, school's, or
-  airport's Wi-Fi
-- Disrupting other people's video calls, smart-home devices, or IoT
-  equipment
-- Mass denial-of-service against arbitrary access points
-- Bypassing captive portals or evading paid Wi-Fi access controls
-
-If you would not be comfortable showing the network owner exactly what
-you are doing, **do not run this firmware against that network**.
-
-You are solely responsible for your use of this software. By building,
-flashing, or running it you accept that responsibility.
-
----
-
 ## Project components
 
 | Component | Directory | Purpose |
@@ -107,22 +48,6 @@ flashing, or running it you accept that responsibility.
 The Flutter app and firmware communicate over BLE using the Nordic UART
 Service (NUS). The firmware also exposes a USB-Serial-JTAG console. The BLE
 device advertises as **Radio C5**.
-
-## Firmware capabilities
-
-The firmware includes:
-
-- Wi-Fi discovery, dual-band targeted Wi-Fi attacks, mass Wi-Fi attacks on all reachable devices and channels with 2 modes, namely SKIP mode and UNICAST dual-band mode, real-time Wi-Fi monitoring, real-time Wi-Fi radar display, Wi-Fi monitoring, evil portal, Wi-Fi sniffer, and Wi-Fi spectrum display across all supported bands.  
-- BLE device scanning, BLE spam, Apple AirTag monitoring, BLE wardriving, signal spectrum display, and passive observation tools.
-- Support for nRF24L01+ radio modules, nRF sniffer scanning, spectrum scanner, nRF24 jammer supports two modes: automatic and manual, mousejack  
-- Support for CC1101 module, signal reading, raw signal reading, emulation of saved signals, frequency analyzer, spectrum analyzer supports signal shifts from 315MHz-915MHz, supports preset OOK and FSK modulations, supports multiple protocols, and brute force  
-- Support for infrared TX and RX, receiver functions, signal decoding, signal library, and infrared remote control, universal infrared remote  
-- Support for internal storage Little FS and SD card, file/data transfer from Desktop/Phone
--ESP Flasher UART support, allows flashing by connecting the ESP32 Board UART pins to the hardware UART pins, transferring bin files from your phone/desktop to Little FS/SD card storage.  
--Device telemetry, including estimated internal temperature and CPU load, BLE speed, and built-in RGB status light.  
--Experimental radio transmission and captive-portal module. Use this feature only in a safe, isolated test environment; never request or store real user credentials.  
-
-BLE observations are not proof of device identity or anyone's location. Signal strength is not an accurate measure of distance. Treat collected data as sensitive information and only keep what’s needed for official tests.
 
 ## Hardware
 
@@ -196,8 +121,17 @@ assume they fit a different board or module.
 The firmware also builds for the **Seeed Studio XIAO ESP32-C5** (8 MB flash /
 8 MB PSRAM) from the same code base. The board pin map and feature flags live in
 [`esp32-c5/main/board_config.h`](esp32-c5/main/board_config.h), selected by a
-Kconfig choice. The XIAO build uses a **separate build directory** and the
-overrides in
+Kconfig choice.
+
+| Function | XIAO pin |
+|---|---|
+| Shared SPI (SCK/MISO/MOSI) | GPIO8 / GPIO9 / GPIO10 (D8/D9/D10 — native SPI pins, not bit-banged) |
+| nRF24 (CSN/CE) | GPIO11 / GPIO12 |
+| CC1101 (CS/GDO0) | GPIO23 / GPIO24 |
+| IR (TX/RX) | GPIO1 / GPIO25 |
+| SD card (CS/CD) | GPIO0 / GPIO7 |
+
+The XIAO build uses a **separate build directory** and the overrides in
 [`esp32-c5/sdkconfig.defaults.xiao`](esp32-c5/sdkconfig.defaults.xiao) (8 MB
 flash size, `partitions.xiao.csv`, XIAO pin map), so it never changes the
 default DevKit build.
@@ -228,7 +162,7 @@ The plain DevKit build (`idf.py build`, `build/`) is unchanged. See
 [`esp32-c5/README.md`](esp32-c5/README.md#board-variants) for the full XIAO pin
 map and board differences (single-colour PWM LED, no UART ESP-flasher).
 
-Building does not validate optional hardware or radio behavior. Perform
+Building does not validate optional hardware or firmware behavior. Perform
 hardware tests only in a controlled, authorized lab.
 
 ### Flutter controller
@@ -274,12 +208,13 @@ signing key. Device-specific helper scripts are in [`garmin/`](garmin/).
 
 ## Credits and License
 
-The foundation of this project started from [AnvilBrain/esp32-c5-dualband-deauther](https://github.com/AnvilBrain/esp32-c5-dualband-deauther).
-This project also ports features from the Unleashed Flipper Zero Firmware (https://github.com/DarkFlippers/unleashed-firmware) such as the universal infrared remote and features like subGHz along with its protocols that were ported to work on the ESP32-C5 with ESP-IDF 5.5.1, Further development details are noted in [`NOTICE`](NOTICE).
+The foundation of this project started from [AnvilBrain/esp32-c5-dualband-deauther](https://github.com/AnvilBrain/esp32-c5-dualband-deauther). Further development details are noted in [`NOTICE`](NOTICE).
 
 ## Contributions
 
-This project is open source. You can help develop it through the Discord community or by submitting a Pull Request (PR). If you find any bugs or issues, feel free to report them in the Issues section. Every contribution is greatly appreciated.
+This project is open source. You can help develop it through the Discord
+community. If you find any bugs or issues, feel free to report them in the
+Issues section. Every contribution is greatly appreciated.
 
 ## Community & Support
 
@@ -290,7 +225,10 @@ Join the [Discord server](https://discord.gg/TYxNvFuns) to follow development up
 If you find this project useful, you can also support its development by:
 
 - ⭐ Starring this repository
-- 🎥 Following on TikTok: [@idextfury](https://www.tiktok.com/@idextfury)
+
+## 🚧 Disclaimer
+This application is intended solely for legal and authorized security testing purposes. Using this software for malicious or unauthorized activity is strictly prohibited. By downloading, installing, or using the apps and firmware, you agree to comply with all applicable laws and regulations.
+The developer of this project is not responsible for any misuse of this software. Use at your own risk.
 
 ## License
 
