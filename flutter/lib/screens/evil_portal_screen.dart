@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 
 import '../models/portal_models.dart';
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
+import '../widgets/glass_surface.dart';
 
 const _kAccent = Color(0xFFFF5252);
 
@@ -441,54 +443,41 @@ class _TemplateRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: selected
-                  ? _kAccent.withValues(alpha: 0.12)
-                  : Colors.white.withValues(alpha: 0.03),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color:
-                    selected ? _kAccent : Colors.white.withValues(alpha: 0.12),
+      child: GlassCard(
+        onTap: onTap,
+        padding: const EdgeInsets.all(12),
+        radius: 12,
+        accent: _kAccent,
+        active: selected,
+        child: Row(
+          children: [
+            Icon(t.icon, color: selected ? _kAccent : AppColors.textDim),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(t.label,
+                      style: const TextStyle(
+                          color: AppColors.text,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14)),
+                  Text('SSID: ${t.defaultSsid}',
+                      style: const TextStyle(
+                          color: AppColors.textDim, fontSize: 11)),
+                ],
               ),
             ),
-            child: Row(
-              children: [
-                Icon(t.icon, color: selected ? _kAccent : Colors.white54),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(t.label,
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14)),
-                      Text('SSID: ${t.defaultSsid}',
-                          style: const TextStyle(
-                              color: Colors.white54, fontSize: 11)),
-                    ],
-                  ),
-                ),
-                if (onDelete != null)
-                  IconButton(
-                    tooltip: 'Delete',
-                    icon: const Icon(Icons.delete_outline,
-                        size: 20, color: Colors.white38),
-                    onPressed: onDelete,
-                  ),
-                if (selected)
-                  const Icon(Icons.check_circle, color: _kAccent, size: 20),
-              ],
-            ),
-          ),
+            if (onDelete != null)
+              IconButton(
+                tooltip: 'Delete',
+                icon: const Icon(Icons.delete_outline,
+                    size: 20, color: AppColors.textFaint),
+                onPressed: onDelete,
+              ),
+            if (selected)
+              const Icon(Icons.check_circle, color: _kAccent, size: 20),
+          ],
         ),
       ),
     );

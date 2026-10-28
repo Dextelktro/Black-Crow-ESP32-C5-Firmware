@@ -107,9 +107,7 @@ class _LedScreenState extends State<LedScreen> {
   Widget build(BuildContext context) {
     _monochrome = context.watch<Settings>().board.ledIsMonochrome;
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0A02),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'LED CONTROL',

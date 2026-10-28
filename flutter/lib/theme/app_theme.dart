@@ -89,6 +89,11 @@ ThemeData buildDarkTheme() {
     ),
     dividerColor: AppColors.border,
     dialogTheme: const DialogThemeData(backgroundColor: AppColors.surface),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: AppColors.surface,
+      modalBackgroundColor: AppColors.surface,
+      surfaceTintColor: Colors.transparent,
+    ),
     snackBarTheme: const SnackBarThemeData(
       backgroundColor: AppColors.surfaceHigh,
       contentTextStyle: TextStyle(color: AppColors.text),

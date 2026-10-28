@@ -58,7 +58,6 @@ class _Nrf24SnifferScreenState extends State<Nrf24SnifferScreen> {
     var delayMs = 5.0;
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF1A1402),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
@@ -148,9 +147,7 @@ class _Nrf24SnifferScreenState extends State<Nrf24SnifferScreen> {
     final packets = ctrl.nrfSniffPackets;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF140F02),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'nRF SNIFFER',

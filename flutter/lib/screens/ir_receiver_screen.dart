@@ -323,7 +323,6 @@ class _IrReceiverScreenState extends State<IrReceiverScreen>
   void _showDetail(DeviceController ctrl, IrDetectedSignal sig, bool latest) {
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: const Color(0xFF14100F),
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),

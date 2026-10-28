@@ -6,7 +6,6 @@ import 'package:provider/provider.dart';
 import '../services/device_controller.dart';
 
 const _kFindMyAccent = Color(0xFF8EA6FF);
-const _kScreenBackground = Color(0xFF02060D);
 
 class FindMyScreen extends StatefulWidget {
   const FindMyScreen({super.key});
@@ -108,9 +107,7 @@ class _FindMyScreenState extends State<FindMyScreen> {
         : devices.map((device) => device.rssi).reduce((a, b) => a > b ? a : b);
 
     return Scaffold(
-      backgroundColor: _kScreenBackground,
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kFindMyAccent),
         title: const Text(
           'APPLE AIRTAG SCAN',
@@ -444,9 +441,7 @@ class _FindMyMonitorScreenState extends State<FindMyMonitorScreen> {
     final samples = List<int>.unmodifiable(_samples);
 
     return Scaffold(
-      backgroundColor: _kScreenBackground,
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kFindMyAccent),
         title: const Text(
           'LIVE MONITOR',

@@ -101,7 +101,6 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
       return await showModalBottomSheet<List<EspFlashDeviceImage>>(
         context: context,
         isScrollControlled: true,
-        backgroundColor: const Color(0xFF111923),
         builder: (sheetContext) {
           final selected = <EspFlashDeviceImage>[];
           return StatefulBuilder(
@@ -315,7 +314,6 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
             },
           );
           return AlertDialog(
-            backgroundColor: const Color(0xFF111923),
             title: Row(
               children: [
                 const Icon(Icons.bolt, color: _accent),

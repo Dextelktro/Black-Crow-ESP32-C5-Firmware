@@ -74,9 +74,7 @@ class _BleWardriveScreenState extends State<BleWardriveScreen> {
     final devices = ctrl.bleWarDevices;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF02060D),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'BLE WARDRIVE',

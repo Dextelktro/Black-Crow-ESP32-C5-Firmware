@@ -6,7 +6,9 @@ import 'package:provider/provider.dart';
 
 import '../services/api_server.dart';
 import '../services/settings.dart';
+import '../theme/app_theme.dart';
 import '../widgets/board_selector.dart';
+import '../widgets/glass_surface.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -74,147 +76,161 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           // ── Device board ───────────────────────────────────────────
-          const Text(
-            'Device board',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          GlassCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                _SectionTitle('Device board'),
+                SizedBox(height: 12),
+                BoardSelector(),
+                SizedBox(height: 10),
+                Text(
+                  'The firmware does not report its board, so set this to match '
+                  'your hardware. It drives the Hardware Peripheral pin map and '
+                  'the LED controls. The XIAO ESP32-C5 has a single-colour PWM '
+                  'LED (not RGB) and cannot run the UART ESP-flasher — every pad '
+                  'is already used, so no pin is free for it.',
+                  style: TextStyle(
+                      color: AppColors.textDim, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 8),
-          const BoardSelector(),
-          const SizedBox(height: 6),
-          const Text(
-            'The firmware does not report its board, so set this to match your '
-            'hardware. It drives the Hardware Peripheral pin map and the LED '
-            'controls. The XIAO ESP32-C5 has a single-colour PWM LED (not RGB) '
-            'and cannot run the UART ESP-flasher — every pad is already used, so '
-            'no pin is free for it.',
-            style: TextStyle(color: Colors.grey, fontSize: 12),
-          ),
-          const SizedBox(height: 24),
-          const Divider(),
-          const SizedBox(height: 8),
+          const SizedBox(height: 14),
 
           // ── API server ─────────────────────────────────────────────
-          const Text(
-            'HTTP API',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-          ),
-          if (settings.loadIssue != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              settings.loadIssue!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-          ],
-          const SizedBox(height: 8),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Enable API server'),
-            subtitle: Text(
-              api.error ??
-                  (settings.apiEnabled
-                      ? (api.isRunning
-                            ? 'Listening on 127.0.0.1:${api.boundPort}'
-                            : 'Starting on 127.0.0.1:${settings.apiPort}…')
-                      : 'Disabled'),
-              style: api.error == null
-                  ? null
-                  : TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-            value: settings.apiEnabled,
-            onChanged: (v) async {
-              try {
-                await settings.setApiEnabled(v);
-              } catch (error) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Unable to save API setting: $error')),
-                );
-              }
-            },
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _portCtrl,
-                  enabled: !settings.apiEnabled,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  decoration: const InputDecoration(
-                    labelText: 'Port',
-                    helperText: 'Disable the server to change the port',
-                    border: OutlineInputBorder(),
-                    isDense: true,
+          GlassCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _SectionTitle('HTTP API'),
+                if (settings.loadIssue != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    settings.loadIssue!,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
                   ),
+                ],
+                const SizedBox(height: 4),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Enable API server'),
+                  subtitle: Text(
+                    api.error ??
+                        (settings.apiEnabled
+                            ? (api.isRunning
+                                  ? 'Listening on 127.0.0.1:${api.boundPort}'
+                                  : 'Starting on 127.0.0.1:${settings.apiPort}…')
+                            : 'Disabled'),
+                    style: api.error == null
+                        ? null
+                        : TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                  value: settings.apiEnabled,
+                  onChanged: (v) async {
+                    try {
+                      await settings.setApiEnabled(v);
+                    } catch (error) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                            content: Text('Unable to save API setting: $error')),
+                      );
+                    }
+                  },
                 ),
-              ),
-              const SizedBox(width: 12),
-              ElevatedButton(
-                onPressed: settings.apiEnabled ? null : _applyPort,
-                child: const Text('Apply'),
-              ),
-            ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _portCtrl,
+                        enabled: !settings.apiEnabled,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly
+                        ],
+                        decoration: const InputDecoration(
+                          labelText: 'Port',
+                          helperText: 'Disable the server to change the port',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    ElevatedButton(
+                      onPressed: settings.apiEnabled ? null : _applyPort,
+                      child: const Text('Apply'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
 
           // ── Endpoint reference ──────────────────────────────────────
           if (settings.apiEnabled) ...[
-            const SizedBox(height: 24),
-            const Divider(),
-            const SizedBox(height: 8),
-            const Text(
-              'Endpoints',
-              style: TextStyle(fontWeight: FontWeight.bold),
+            const SizedBox(height: 14),
+            GlassCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const _SectionTitle('Endpoints'),
+                  const SizedBox(height: 8),
+                  _ep('GET', '/', 'Health check / connected status'),
+                  _ep('GET', '/device', 'Full device state (JSON)'),
+                  _ep('GET', '/aps', 'Scanned access points'),
+                  _ep('GET', '/log', 'Raw firmware log'),
+                  _ep('POST', '/scan', 'Start Wi-Fi scan'),
+                  _ep('POST', '/attack/start', 'Start the selected attack'),
+                  _ep('POST', '/attack/stop', 'Stop current attack'),
+                  _ep('POST', '/nuke', 'Body: {"secs": 30}'),
+                  _ep('POST', '/cmd', 'Body: {"cmd": "help"}'),
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
-            _ep('GET', '/', 'Health check / connected status'),
-            _ep('GET', '/device', 'Full device state (JSON)'),
-            _ep('GET', '/aps', 'Scanned access points'),
-            _ep('GET', '/log', 'Raw firmware log'),
-            _ep('POST', '/scan', 'Start Wi-Fi scan'),
-            _ep('POST', '/attack/start', 'Start the selected attack'),
-            _ep('POST', '/attack/stop', 'Stop current attack'),
-            _ep('POST', '/nuke', 'Body: {"secs": 30}'),
-            _ep('POST', '/cmd', 'Body: {"cmd": "help"}'),
           ],
-          const SizedBox(height: 24),
-          const Divider(),
-          const SizedBox(height: 8),
-          const Text(
-            'About',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-          ),
-          const SizedBox(height: 8),
-          if (!Platform.isAndroid)
-            const Text(
-              'App and Android version details are available on Android.',
-              style: TextStyle(color: Colors.grey),
-            )
-          else
-            FutureBuilder<Map<String, String>>(
-              future: _appInfo,
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return Text(
-                    'Unable to load version information: ${snapshot.error}',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  );
-                }
-                if (!snapshot.hasData) {
-                  return const LinearProgressIndicator();
-                }
-                final info = snapshot.data!;
-                return Column(
-                  children: [
-                    _infoRow('App version', info['appVersion']!),
-                    _infoRow('Android version', info['androidVersion']!),
-                    _infoRow('Flutter version', info['flutterVersion']!),
-                  ],
-                );
-              },
+          const SizedBox(height: 14),
+          GlassCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _SectionTitle('About'),
+                const SizedBox(height: 8),
+                if (!Platform.isAndroid)
+                  const Text(
+                    'App and Android version details are available on Android.',
+                    style: TextStyle(color: AppColors.textDim),
+                  )
+                else
+                  FutureBuilder<Map<String, String>>(
+                    future: _appInfo,
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return Text(
+                          'Unable to load version information: ${snapshot.error}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        );
+                      }
+                      if (!snapshot.hasData) {
+                        return const LinearProgressIndicator();
+                      }
+                      final info = snapshot.data!;
+                      return Column(
+                        children: [
+                          _infoRow('App version', info['appVersion']!),
+                          _infoRow('Android version', info['androidVersion']!),
+                          _infoRow('Flutter version', info['flutterVersion']!),
+                        ],
+                      );
+                    },
+                  ),
+              ],
             ),
+          ),
         ],
       ),
     );
@@ -225,12 +241,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       contentPadding: EdgeInsets.zero,
       dense: true,
       title: Text(label),
-      trailing: Text(value, style: const TextStyle(color: Colors.grey)),
+      trailing: Text(value, style: const TextStyle(color: AppColors.textDim)),
     );
   }
 
   Widget _ep(String method, String path, String desc) {
-    final color = method == 'GET' ? Colors.teal : Colors.orange;
+    final color = method == 'GET' ? AppColors.accent : AppColors.warning;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -266,6 +282,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Bold section heading used inside each settings [GlassCard].
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: AppColors.text,
+        fontWeight: FontWeight.bold,
+        fontSize: 16,
       ),
     );
   }

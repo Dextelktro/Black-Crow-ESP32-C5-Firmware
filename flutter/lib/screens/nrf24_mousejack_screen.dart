@@ -51,7 +51,6 @@ class _Nrf24MousejackScreenState extends State<Nrf24MousejackScreen> {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF17102A),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
@@ -145,9 +144,7 @@ class _Nrf24MousejackScreenState extends State<Nrf24MousejackScreen> {
     final scanning = ctrl.nrfMjRunning;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0C0618),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'MOUSEJACK',

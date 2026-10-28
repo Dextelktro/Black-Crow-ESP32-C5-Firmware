@@ -81,9 +81,7 @@ class _WifiSpamModeScreenState extends State<WifiSpamModeScreen> {
     final customEmpty = _isCustom && ctrl.wspamCustom.isEmpty;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF120600),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: IconThemeData(color: _accent),
         title: Text(
           '${widget.mode.label.toUpperCase()} SPAM',

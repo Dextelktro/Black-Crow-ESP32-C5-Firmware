@@ -74,9 +74,7 @@ class _WifiLiveScanScreenState extends State<WifiLiveScanScreen> {
     final aps = ctrl.wlscanAps;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF02060D),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'WIFI LIVE SCAN',

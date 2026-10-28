@@ -41,9 +41,7 @@ class WifiSpamScreen extends StatelessWidget {
     final active = ctrl.wspamRunning;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF120600),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'WIFI SPAM',

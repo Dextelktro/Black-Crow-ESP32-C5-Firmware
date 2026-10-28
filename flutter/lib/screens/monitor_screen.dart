@@ -56,9 +56,7 @@ class _MonitorScreenState extends State<MonitorScreen> {
     final liveRssi = ctrl.monitorRssi != 0 ? ctrl.monitorRssi : ap.rssi;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF02060D),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: Text(
           ap.ssid.isNotEmpty ? ap.ssid : '(hidden network)',

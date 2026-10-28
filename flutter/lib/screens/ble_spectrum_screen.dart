@@ -109,9 +109,7 @@ class _BleSpectrumScreenState extends State<BleSpectrumScreen> {
     final wfH = (MediaQuery.of(context).size.height * 0.34).clamp(220.0, 360.0);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF02090D),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'BLE SPECTRUM',

@@ -237,9 +237,7 @@ class _SpectrumScreenState extends State<SpectrumScreen>
         : '${DateTime.now().difference(latestSampleAt).inMilliseconds}ms';
 
     return Scaffold(
-      backgroundColor: const Color(0xFF02100C),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _k24),
         title: const Text(
           'WIFI SPECTRUM',

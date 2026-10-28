@@ -202,7 +202,6 @@ class _TypeCard extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF0A1A0A),
         title: Text(
           'Warning: ${type.label}',
           style: const TextStyle(color: Color(0xFFFF4040)),

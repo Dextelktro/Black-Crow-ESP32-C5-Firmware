@@ -7,7 +7,6 @@ import '../services/device_controller.dart';
 import '../widgets/device_issue_banner.dart';
 import '../widgets/nrf_kit.dart';
 
-const _kBg = Color(0xFF140404);
 const _kAccent = Color(0xFFFF3B30);
 
 const _targets = <(String, String)>[
@@ -106,9 +105,7 @@ class _Nrf24JammerScreenState extends State<Nrf24JammerScreen> {
     final running = ctrl.nrfJamRunning;
 
     return Scaffold(
-      backgroundColor: _kBg,
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'nRF JAMMER',

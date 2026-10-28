@@ -5,7 +5,6 @@ import '../services/settings.dart';
 import '../widgets/board_selector.dart';
 import '../widgets/glass_surface.dart';
 
-const _kCanvas = Color(0xFF07110F);
 const _kPanel = Color(0xFF0D1D19);
 const _kMint = Color(0xFF63F2CE);
 const _kAmber = Color(0xFFFFC66D);
@@ -20,9 +19,9 @@ class HardwarePeripheralScreen extends StatelessWidget {
     final board = context.watch<Settings>().board;
     final spec = board == BoardVariant.xiao ? _xiaoSpec : _devkitSpec;
     return Scaffold(
-      backgroundColor: _kCanvas,
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
-        backgroundColor: _kCanvas,
+        backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
         title: const Text(
           'Hardware Peripheral',

@@ -8,7 +8,6 @@ import '../widgets/device_issue_banner.dart';
 import '../widgets/nrf_kit.dart';
 import '../widgets/waterfall.dart';
 
-const _kBg = Color(0xFF02100C);
 const _kAccent = Color(0xFF00E0B8);
 const _kPeak = Color(0xFFFFD000);
 const int _kMaxRows = 140; // waterfall history depth
@@ -135,9 +134,7 @@ class _Nrf24ScannerScreenState extends State<Nrf24ScannerScreen> {
     final wfH = (MediaQuery.of(context).size.height * 0.34).clamp(220.0, 360.0);
 
     return Scaffold(
-      backgroundColor: _kBg,
       appBar: AppBar(
-        backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: _kAccent),
         title: const Text(
           'nRF SCANNER',
