@@ -3,12 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Hardening: lock sources down. All scripts are local (no inline/eval),
+         fonts come from Google, firmware is fetched same-origin. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
+    />
+    <meta name="referrer" content="no-referrer" />
     <title>Black Crow · Web Flasher</title>
     <meta
       name="description"
       content="Flash the Black Crow ESP32-C5 firmware straight from your browser — no install. Pick your board, select the USB port, erase or flash, and open a serial monitor."
     />
-    <meta name="theme-color" content="#07080a" />
+    <meta name="theme-color" content="#06070a" />
     <link rel="icon" href="assets/black-crow.jpeg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,7 +26,7 @@
     <link rel="stylesheet" href="assets/styles.css" />
   </head>
   <body>
-    <div class="bg-fx" aria-hidden="true"></div>
+    <div class="bg-fx" aria-hidden="true"><div class="scan"></div></div>
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
     <!-- Unsupported browser screen -->
@@ -51,7 +58,7 @@
         <header class="hero">
           <img class="logo" src="assets/black-crow.jpeg" alt="Black Crow — Network &amp; Embedded Experiment Lab" />
           <div class="kicker">ESP32-C5 · Web Flasher</div>
-          <h1>Flash it in your browser</h1>
+          <h1>Flash it <span class="accent">in your browser</span></h1>
           <p class="lead">
             Install the Black Crow ESP32-C5 firmware with three clicks — no toolchain, no
             command line. Pick a board, choose the USB port, and flash. Firmware
@@ -75,18 +82,18 @@
               <span class="sub">two supported targets</span>
             </div>
             <div class="boards">
-              <button class="board-card" data-board="devkit" type="button">
+              <button class="board-card" data-board="devkit" type="button" aria-pressed="false">
                 <div class="bc-top">
-                  <span style="font-family: var(--mono); color: var(--faint); font-size: 12px">DevKit</span>
+                  <span class="bc-tag">DevKit</span>
                   <span class="bc-badge">16 MB</span>
                 </div>
                 <h3>ESP32-C5-DevKitC-1</h3>
                 <div class="bc-sub">WROOM-1-N16R8 · 16 MB flash · 8 MB PSRAM</div>
                 <div class="bc-check">✓ Selected</div>
               </button>
-              <button class="board-card" data-board="xiao" type="button">
+              <button class="board-card" data-board="xiao" type="button" aria-pressed="false">
                 <div class="bc-top">
-                  <span style="font-family: var(--mono); color: var(--faint); font-size: 12px">XIAO</span>
+                  <span class="bc-tag">XIAO</span>
                   <span class="bc-badge">8 MB</span>
                 </div>
                 <h3>Seeed XIAO ESP32-C5</h3>
@@ -135,6 +142,14 @@
               <button class="btn danger" id="btnErase" type="button">⌫ Erase Flash</button>
               <button class="btn ghost" id="btnMonitor" type="button">▶ Open Serial Monitor</button>
             </div>
+            <div class="flash-stage" id="flashStage" aria-hidden="true">
+              <div class="fs-stream">
+                <i class="fs-bit"></i><i class="fs-bit"></i><i class="fs-bit"></i>
+                <i class="fs-bit"></i><i class="fs-bit"></i><i class="fs-bit"></i>
+              </div>
+              <div class="fs-chip"><span class="fs-label">C5</span></div>
+              <div class="fs-status"><span class="fs-dot"></span><span class="fs-text" id="flashStageText">Idle — ready to flash</span></div>
+            </div>
             <div class="progress-wrap" id="progressWrap">
               <div class="progress-label">
                 <span id="progressName">Preparing…</span>
@@ -146,7 +161,7 @@
         </main>
 
         <!-- Log console -->
-        <section class="console-card">
+        <section class="console-card reveal">
           <div class="console-head">
             <span class="title"><span class="d"></span>Flash log</span>
             <span class="spacer"></span>
@@ -178,11 +193,11 @@
         <!-- Discord CTA -->
         <section class="discord-cta" id="discordCta">
           <div class="discord-inner">
-            <div class="ok-chip">✓ Firmware installed</div>
+            <div class="ok-chip">✓ Firmware installed — device rebooting</div>
             <h3>You're flashed. Come build with us.</h3>
             <p>
-              Join the Black Crow community on Discord for firmware updates, hardware talk,
-              troubleshooting and development chat.
+              Jump into the Black Crow Discord — help shape the firmware, share hardware mods and
+              feature ideas, get troubleshooting help, or just hang out and chat with the community.
             </p>
             <div class="discord-actions">
               <a class="btn discord" data-discord href="#" target="_blank" rel="noopener">Join the Discord</a>

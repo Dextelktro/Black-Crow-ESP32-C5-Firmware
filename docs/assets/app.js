@@ -63,6 +63,7 @@ function toast(kind, title, msg, ms = 4200) {
   const stack = $("toastStack");
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
+  el.style.setProperty("--dur", `${ms}ms`);
   el.innerHTML = `<div class="t-title"></div><div class="t-msg"></div>`;
   el.querySelector(".t-title").textContent = title;
   el.querySelector(".t-msg").textContent = msg || "";
@@ -119,6 +120,12 @@ function setBusy(v, btn, labelBusy) {
 
 /* --------------------------- helpers ------------------------------ */
 async function fetchBytes(path) {
+  // Defense-in-depth: the manifest is same-origin, but never let a path in it
+  // reach off-origin. Only accept a plain relative path (no scheme, no
+  // protocol-relative "//", no leading "/", no ".." traversal).
+  if (typeof path !== "string" || !/^[A-Za-z0-9._\-/]+$/.test(path) || path.startsWith("/") || path.includes("//") || path.includes("..")) {
+    throw new Error(`Refused unsafe firmware path: ${path}`);
+  }
   const res = await fetch(path, { cache: "no-cache" });
   if (!res.ok) throw new Error(`${path} → HTTP ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
@@ -139,7 +146,11 @@ function selectBoard(id) {
   const board = state.manifest.boards[id];
   if (!board) return;
   state.board = board;
-  document.querySelectorAll(".board-card").forEach((c) => c.classList.toggle("selected", c.dataset.board === id));
+  document.querySelectorAll(".board-card").forEach((c) => {
+    const on = c.dataset.board === id;
+    c.classList.toggle("selected", on);
+    c.setAttribute("aria-pressed", String(on));
+  });
   $("flashTargetName").textContent = board.name;
   setActiveStep("step-connect");
   refreshUI();
@@ -212,6 +223,7 @@ async function startFlash() {
   setBusy(true, btn, "Flashing…");
   $("progressWrap").classList.add("show");
   setProgress(0, "Preparing…");
+  setFlashStage("flashing", "Streaming firmware to the chip…");
   try {
     logTerm.writeLine(`» Downloading firmware for ${state.board.name}…`);
     const parts = [];
@@ -231,11 +243,17 @@ async function startFlash() {
       }
     );
     setProgress(100, "Done");
+    setFlashStage("done", "Done — firmware installed, device rebooting");
+    // The board hard-resets and (native USB) re-enumerates, which invalidates
+    // the current port handle. Drop it so the next Connect / Monitor click
+    // re-opens the picker on the fresh device instead of a dead handle.
+    state.port = null;
     toast("ok", "Flash complete", "Firmware installed. The device is rebooting.");
     logTerm.writeLine("✓ Flash complete — device reset into the new firmware.");
     $("discordCta").classList.add("show");
     $("discordCta").scrollIntoView({ behavior: "smooth", block: "center" });
   } catch (err) {
+    setFlashStage("idle", "Flash failed — see the log below");
     toast("err", "Flash failed", err.message);
     logTerm.writeLine(`‼ Flash failed: ${err.message}`);
     logTerm.writeLine(`  Tip: hold BOOT, tap RESET, release BOOT, reconnect, then retry.`);
@@ -248,6 +266,14 @@ function setProgress(pct, label) {
   $("progressBar").style.width = `${pct}%`;
   $("progressPct").textContent = `${pct}%`;
   if (label) $("progressName").textContent = label;
+}
+
+/** Drive the chip visual: state is "idle" | "flashing" | "done". */
+function setFlashStage(stateName, text) {
+  const el = $("flashStage");
+  el.classList.toggle("flashing", stateName === "flashing");
+  el.classList.toggle("done", stateName === "done");
+  if (text) $("flashStageText").textContent = text;
 }
 
 async function toggleMonitor() {
@@ -276,7 +302,10 @@ async function toggleMonitor() {
     state.mode = "monitoring";
     toast("info", "Monitor open", `Reading the device console at ${baud} baud.`);
   } catch (err) {
-    toast("err", "Monitor error", err.message);
+    // The port handle may be stale (e.g. the device re-enumerated after a
+    // flash/reset). Drop it so clicking again re-opens the picker.
+    state.port = null;
+    toast("err", "Monitor error", `${err.message} — click again to re-select the port.`);
     monTerm.writeLine(`[could not open monitor: ${err.message}]`);
   }
   refreshUI();
@@ -340,8 +369,49 @@ async function init() {
   $("btnMonitorClear").addEventListener("click", () => monTerm.clean());
   document.querySelectorAll("[data-discord]").forEach((a) => (a.href = DISCORD_URL));
 
+  initMotion();
   setActiveStep("step-board");
   refreshUI();
+}
+
+/* Scroll-reveal + subtle pointer-driven tilt/sheen on the board cards.
+   All of it is disabled under prefers-reduced-motion or coarse pointers. */
+function initMotion() {
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const revealEls = document.querySelectorAll(".reveal");
+
+  if (reduceMotion || !("IntersectionObserver" in window)) {
+    revealEls.forEach((el) => el.classList.add("in"));
+  } else {
+    const io = new IntersectionObserver(
+      (entries, obs) =>
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            e.target.classList.add("in");
+            obs.unobserve(e.target);
+          }
+        }),
+      { threshold: 0.12 }
+    );
+    revealEls.forEach((el) => io.observe(el));
+  }
+
+  if (reduceMotion || !window.matchMedia("(pointer: fine)").matches) return;
+  document.querySelectorAll(".board-card").forEach((card) => {
+    card.addEventListener("pointermove", (ev) => {
+      const r = card.getBoundingClientRect();
+      const px = (ev.clientX - r.left) / r.width; // 0..1
+      const py = (ev.clientY - r.top) / r.height; // 0..1
+      card.style.setProperty("--ry", `${(px - 0.5) * 10}deg`);
+      card.style.setProperty("--rx", `${(0.5 - py) * 8}deg`);
+      card.style.setProperty("--px", `${px * 100}%`);
+      card.style.setProperty("--py", `${py * 100}%`);
+    });
+    card.addEventListener("pointerleave", () => {
+      card.style.setProperty("--ry", "0deg");
+      card.style.setProperty("--rx", "0deg");
+    });
+  });
 }
 
 document.addEventListener("DOMContentLoaded", init);
