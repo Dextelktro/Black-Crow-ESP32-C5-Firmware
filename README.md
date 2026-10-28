@@ -203,13 +203,20 @@ signing key. Device-specific helper scripts are in [`garmin/`](garmin/).
 ├── inspirations/   Reference projects
 ├── screenshots/    Controller screenshots and demos
 ├── specs.md        ESP32-C5-DevKitC-1 hardware reference
-├── LICENSE         Apache License 2.0
-└── NOTICE          Third-party attribution
+├── LICENSE         GNU General Public License v3.0 (or later)
+└── NOTICE          Third-party attribution + GPL section 7 exception
 ```
 
 ## Credits and License
 
 The foundation of this project started from [AnvilBrain/esp32-c5-dualband-deauther](https://github.com/AnvilBrain/esp32-c5-dualband-deauther). Further development details are noted in [`NOTICE`](NOTICE).
+
+Several radio features — the **Sub-GHz** CC1101 modulation presets and protocol
+decoders, and the **universal infrared** remote libraries — were ported from the
+GPL-3.0 **Flipper Zero Unleashed** firmware
+([DarkFlippers/unleashed-firmware](https://github.com/DarkFlippers/unleashed-firmware)).
+Because that upstream is GPL-3.0, the combined work here is licensed
+GPL-3.0-or-later. Full per-component attribution is in [`NOTICE`](NOTICE).
 
 ## Contributions
 
@@ -233,5 +240,12 @@ The developer of this project is not responsible for any misuse of this software
 
 ## License
 
-This project is distributed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for license terms and attribution.
-=======
+This project is **free software** distributed under the **GNU General Public
+License v3.0 or later (GPL-3.0-or-later)**. It incorporates Sub-GHz and infrared
+components derived from the GPL-3.0-licensed
+[Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware),
+which is why the combined work is licensed under the GPL.
+
+See [`LICENSE`](LICENSE) for the full license text and [`NOTICE`](NOTICE) for
+third-party attribution and for the GPL section 7 linking exception that covers
+the proprietary Espressif ESP-IDF binary libraries (e.g. `libnet80211.a`).

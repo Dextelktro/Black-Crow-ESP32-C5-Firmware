@@ -1,9 +1,139 @@
-5g Deauther Toolkit
-Copyright 2026 Max Brito and contributors
+Black Crow Firmware — ESP32-C5 Multi-Radio Lab Toolkit
+Copyright (C) 2026 Black Crow Official Community Dxt and contributors
 
-This product includes software that comes from the project
-"ESP32-C5 Dual-Band Deauther" by AnvilBrain
-https://github.com/AnvilBrain/esp32-c5-dualband-deauther
-After that, the project was further developed by x1watt
-https://github.com/x1watt/esp32-c5-deauth
-The original work is licensed under the MIT License.
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file for the full GPL-3.0 text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+
+================================================================================
+ADDITIONAL PERMISSION UNDER GNU GPL VERSION 3 SECTION 7
+================================================================================
+
+As a special exception, the copyright holders of this program give you
+permission to link it with the proprietary binary libraries, blobs, and build
+tooling supplied by Espressif Systems (Shanghai) Co., Ltd. as part of the
+ESP-IDF SDK and its toolchain — including but not limited to the Wi-Fi / 802.11
+MAC library (libnet80211.a, see esp32-c5/patched_libnet/), the Bluetooth/BLE
+controller libraries, the PHY/RF calibration blobs, and the RISC-V GCC
+toolchain — and to convey the resulting combined work in object or executable
+(firmware) form.
+
+You must still provide the complete corresponding source code of THIS program,
+under the GPL, for everything except those Espressif-supplied components. If you
+modify this program, you may extend this exception to your version of it, but
+you are not obligated to do so.
+
+
+================================================================================
+THIRD-PARTY COMPONENTS AND ATTRIBUTION
+================================================================================
+
+This product includes software from the projects listed below. Each component
+remains under its own license (reproduced here or stored alongside the
+component). The combined work is distributed under GPL-3.0-or-later, which every
+license below permits.
+
+--------------------------------------------------------------------------------
+1. ESP32-C5 Dual-Band Deauther  —  original foundation of this project
+--------------------------------------------------------------------------------
+   Copyright (c) 2025 AnvilBrain
+   License: MIT
+   Upstream: https://github.com/AnvilBrain/esp32-c5-dualband-deauther
+   Further developed by x1watt: https://github.com/x1watt/esp32-c5-deauth
+   Full MIT text is also kept at: inspirations/esp32-c5-dualband-deauther/LICENSE
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+--------------------------------------------------------------------------------
+2. Flipper Zero firmware  —  Sub-GHz presets/protocols and IR universal database
+--------------------------------------------------------------------------------
+   Copyright (c) Flipper Devices Inc. and the flipperzero-firmware contributors
+   License: GPL-3.0
+   Upstream: https://github.com/flipperdevices/flipperzero-firmware
+
+   This project incorporates material derived from the Flipper Zero firmware.
+   This GPL-3.0 code is the reason the combined work is licensed under the GPL.
+   Derived files:
+     - esp32-c5/main/subghz_presets.c/.h   CC1101 register presets, from
+                                           lib/subghz/devices/cc1101_configs.c
+     - esp32-c5/main/subghz_protocol.c/.h  Sub-GHz protocol timing constants and
+                                           bit order (Princeton, CAME, NICE,
+                                           Holtek, Linear, ...)
+     - esp32-c5/main/subghz.c              frequency analyzer and RX-bandwidth
+                                           tuning
+     - esp32-c5/main/ir_db*.c / *.inc      IR universal remote codes, converted
+                                           (via tools/generate_ir_universal_db.py)
+                                           from the flipperzero-firmware universal
+                                           assets at applications/main/infrared/
+                                           resources/infrared/assets/*.ir
+                                           (tv, ac, audio, fans, leds, projectors).
+                                           These are the firmware's bundled
+                                           universal assets (GPL-3.0), NOT the
+                                           public-domain community Flipper-IRDB.
+
+--------------------------------------------------------------------------------
+3. esptool-js  —  browser firmware flasher  (docs/vendor/esptool-bundle.js)
+--------------------------------------------------------------------------------
+   Copyright (c) Espressif Systems (Shanghai) Co., Ltd.
+   License: Apache-2.0
+   Upstream: https://github.com/espressif/esptool-js
+
+--------------------------------------------------------------------------------
+4. pako  —  zlib port  (bundled inside docs/vendor/esptool-bundle.js)
+--------------------------------------------------------------------------------
+   Copyright (c) 2014-2017 Vitaly Puzrin and Andrei Tuputcyn
+   License: MIT AND Zlib
+   Upstream: https://github.com/nodeca/pako
+
+--------------------------------------------------------------------------------
+5. SparkMD5  (docs/vendor/spark-md5.min.js)
+--------------------------------------------------------------------------------
+   Copyright (c) 2013-2016 Andre Cruz
+   License: MIT / WTFPL
+   Upstream: https://github.com/satazor/js-spark-md5
+
+--------------------------------------------------------------------------------
+6. ESP-IDF managed components  (esp32-c5/managed_components/)
+--------------------------------------------------------------------------------
+   Each keeps its own LICENSE file inside its component directory:
+     - joltwallet/littlefs            BSD-3-Clause
+       Copyright (c) 2022 The littlefs authors; (c) 2017 Arm Limited.
+     - espressif/led_strip            Apache-2.0
+     - espressif/esp-serial-flasher   Apache-2.0
+   ESP-IDF example/scaffold files (e.g. unity-app/main/test_app_main.c) remain
+   under their original Espressif Apache-2.0 headers.
+
+--------------------------------------------------------------------------------
+7. Espressif Wi-Fi / 802.11 binary library
+   (esp32-c5/patched_libnet/libnet80211.a)
+--------------------------------------------------------------------------------
+   Copyright (c) Espressif Systems (Shanghai) Co., Ltd.
+   License: Espressif MIT License (binary redistribution; the library may be
+   used only in connection with Espressif SoCs).
+   Upstream: https://github.com/espressif/esp32-wifi-lib
+
+   NOTE: This is a MODIFIED copy of the stock ESP-IDF libnet80211.a, patched to
+   permit raw 802.11 frame transmission. Linking this proprietary blob with the
+   GPL program is covered by the GPL section 7 additional permission above.
