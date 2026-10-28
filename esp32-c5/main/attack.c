@@ -457,6 +457,18 @@ static void attack_deauth_all_task(void *arg)
     bool    cur_is5 = false;
     bool    idle_noted = false;
 
+    /* Cold start tanpa target ter-scan: picu satu auto-scan di awal supaya
+     * deauth-all yang dijalankan langsung dari layar khususnya (atau dari CLI)
+     * menyerang AP di sekitar TANPA harus lebih dulu men-scan lewat layar
+     * Nuke/Network yang mengisi tabel target bersama. Memakai ulang jalur
+     * rescan yang sama (emit "RESCAN start" → SCAN_AP → SCAN_DONE, rebuild
+     * daftar channel, reset band), sehingga parser Flutter & indikator
+     * SCANNING ikut sinkron. Hanya saat tabel kosong — bila target sudah ada
+     * (mis. dari live scan Nuke) kita langsung menyerang tanpa delay scan. */
+    if (occ_n == 0) {
+        s_rescan_requested = true;
+    }
+
     while (s_running) {
         /* ---- Cek permintaan rescan manual ---- */
         if (s_rescan_requested) {
