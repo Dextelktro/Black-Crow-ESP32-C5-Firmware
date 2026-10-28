@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Black Crow · Web Flasher</title>
+    <meta
+      name="description"
+      content="Flash the Black Crow ESP32-C5 firmware straight from your browser — no install. Pick your board, select the USB port, erase or flash, and open a serial monitor."
+    />
+    <meta name="theme-color" content="#07080a" />
+    <link rel="icon" href="assets/black-crow.jpeg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body>
+    <div class="bg-fx" aria-hidden="true"></div>
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+    <!-- Unsupported browser screen -->
+    <section class="unsupported" id="unsupported">
+      <div class="wrap">
+        <div class="u-icon">🦅</div>
+        <h2>This flasher needs the Web Serial API</h2>
+        <p>
+          Flashing happens directly from the browser over USB, which requires
+          <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong> on a
+          <strong>desktop computer</strong>, served over HTTPS. Safari, Firefox and
+          mobile browsers are not supported.
+        </p>
+        <div class="browsers">
+          <span class="pill">Chrome 89+</span>
+          <span class="pill">Edge 89+</span>
+          <span class="pill">Desktop · HTTPS</span>
+        </div>
+        <p style="margin-top: 22px">
+          Prefer not to use a browser? Grab the firmware and tools from the
+          <a data-discord style="color: var(--lime)" href="#">Discord</a> or the project releases.
+        </p>
+      </div>
+    </section>
+
+    <!-- Main app -->
+    <div id="app">
+      <div class="wrap">
+        <header class="hero">
+          <img class="logo" src="assets/black-crow.jpeg" alt="Black Crow — Network &amp; Embedded Experiment Lab" />
+          <div class="kicker">ESP32-C5 · Web Flasher</div>
+          <h1>Flash it in your browser</h1>
+          <p class="lead">
+            Install the Black Crow ESP32-C5 firmware with three clicks — no toolchain, no
+            command line. Pick a board, choose the USB port, and flash. Firmware
+            <b id="fwVersion" style="color: var(--lime)"></b>.
+          </p>
+          <div class="banner">
+            <span class="dot">◆</span>
+            <span
+              >Works in <b>Chrome</b> or <b>Edge</b> on desktop. Connect your board by USB
+              before you start. Everything runs locally in your browser — nothing is uploaded.</span
+            >
+          </div>
+        </header>
+
+        <main class="steps">
+          <!-- Step 1 — board -->
+          <section class="step" id="step-board">
+            <div class="step-head">
+              <div class="step-no">1</div>
+              <h2>Choose your board</h2>
+              <span class="sub">two supported targets</span>
+            </div>
+            <div class="boards">
+              <button class="board-card" data-board="devkit" type="button">
+                <div class="bc-top">
+                  <span style="font-family: var(--mono); color: var(--faint); font-size: 12px">DevKit</span>
+                  <span class="bc-badge">16 MB</span>
+                </div>
+                <h3>ESP32-C5-DevKitC-1</h3>
+                <div class="bc-sub">WROOM-1-N16R8 · 16 MB flash · 8 MB PSRAM</div>
+                <div class="bc-check">✓ Selected</div>
+              </button>
+              <button class="board-card" data-board="xiao" type="button">
+                <div class="bc-top">
+                  <span style="font-family: var(--mono); color: var(--faint); font-size: 12px">XIAO</span>
+                  <span class="bc-badge">8 MB</span>
+                </div>
+                <h3>Seeed XIAO ESP32-C5</h3>
+                <div class="bc-sub">Native USB-C · 8 MB flash</div>
+                <div class="bc-check">✓ Selected</div>
+              </button>
+            </div>
+          </section>
+
+          <!-- Step 2 — connect -->
+          <section class="step" id="step-connect" aria-disabled="true">
+            <div class="step-head">
+              <div class="step-no">2</div>
+              <h2>Select the USB port</h2>
+              <span class="sub">pick your device in the browser dialog</span>
+            </div>
+            <div class="controls">
+              <button class="btn primary" id="btnConnect" type="button">⚡ Select Port &amp; Connect</button>
+              <label class="field">
+                baud
+                <select id="baudSelect">
+                  <option value="921600">921600</option>
+                  <option value="460800" selected>460800</option>
+                  <option value="230400">230400</option>
+                  <option value="115200">115200</option>
+                </select>
+              </label>
+            </div>
+            <div class="chip-info" id="chipInfo">
+              <span>Chip: <b id="ciChip">—</b></span>
+              <span>MAC: <b id="ciMac">—</b></span>
+              <span>Port: <b id="ciPort">—</b></span>
+              <span>Target: <b id="ciTarget">—</b></span>
+            </div>
+          </section>
+
+          <!-- Step 3 — flash -->
+          <section class="step" id="step-flash" aria-disabled="true">
+            <div class="step-head">
+              <div class="step-no">3</div>
+              <h2>Erase &amp; flash</h2>
+              <span class="sub">target: <b id="flashTargetName" style="color: var(--muted)">—</b></span>
+            </div>
+            <div class="controls">
+              <button class="btn primary" id="btnFlash" type="button">▸ Start Flash</button>
+              <button class="btn danger" id="btnErase" type="button">⌫ Erase Flash</button>
+              <button class="btn ghost" id="btnMonitor" type="button">▶ Open Serial Monitor</button>
+            </div>
+            <div class="progress-wrap" id="progressWrap">
+              <div class="progress-label">
+                <span id="progressName">Preparing…</span>
+                <span class="pct" id="progressPct">0%</span>
+              </div>
+              <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+            </div>
+          </section>
+        </main>
+
+        <!-- Log console -->
+        <section class="console-card">
+          <div class="console-head">
+            <span class="title"><span class="d"></span>Flash log</span>
+            <span class="spacer"></span>
+            <button class="btn ghost sm" id="btnLogCopy" type="button">Copy</button>
+            <button class="btn ghost sm" id="btnLogClear" type="button">Clear</button>
+          </div>
+          <pre class="console" id="logConsole"><span class="console-empty">Waiting for a board…</span></pre>
+        </section>
+
+        <!-- Serial monitor -->
+        <section class="console-card hidden" id="monitorCard">
+          <div class="console-head">
+            <span class="title"><span class="d" style="background: #5aa9ff; box-shadow: 0 0 10px #5aa9ff"></span>Serial monitor</span>
+            <span class="spacer"></span>
+            <label class="field" style="font-size: 13px">
+              baud
+              <select id="monBaud">
+                <option value="115200" selected>115200</option>
+                <option value="74880">74880</option>
+                <option value="230400">230400</option>
+                <option value="921600">921600</option>
+              </select>
+            </label>
+            <button class="btn ghost sm" id="btnMonitorClear" type="button">Clear</button>
+          </div>
+          <pre class="console monitor" id="monitorConsole"></pre>
+        </section>
+
+        <!-- Discord CTA -->
+        <section class="discord-cta" id="discordCta">
+          <div class="discord-inner">
+            <div class="ok-chip">✓ Firmware installed</div>
+            <h3>You're flashed. Come build with us.</h3>
+            <p>
+              Join the Black Crow community on Discord for firmware updates, hardware talk,
+              troubleshooting and development chat.
+            </p>
+            <div class="discord-actions">
+              <a class="btn discord" data-discord href="#" target="_blank" rel="noopener">Join the Discord</a>
+              <button class="btn ghost" id="btnMonitorCta" type="button">▶ Open Serial Monitor</button>
+            </div>
+          </div>
+        </section>
+
+        <footer>
+          <div class="links">
+            <a href="https://github.com/padadexxtfury/Black-Crow-ESP32-Firmware" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/padadexxtfury/Black-Crow-ESP32-Firmware/releases" target="_blank" rel="noopener">Releases &amp; app</a>
+            <a data-discord href="#" target="_blank" rel="noopener">Discord</a>
+          </div>
+          <div class="warn-note">
+            ⚠ Authorized testing only. This firmware is published for defensive security
+            research and education. Flashing and running it is your responsibility — use it
+            only on hardware and networks you own or are permitted to test.
+          </div>
+        </footer>
+      </div>
+    </div>
+
+    <!-- spark-md5 (UMD, exposes window.SparkMD5) must load before the module -->
+    <script src="vendor/spark-md5.min.js"></script>
+    <script type="module" src="assets/app.js"></script>
+  </body>
+</html>

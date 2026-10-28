@@ -1,0 +1,41 @@
+{
+  "firmwareVersion": "BCfw-v0.1.0 · app-v1.0.0",
+  "chip": "esp32c5",
+  "flashOffsets": { "bootloader": "0x2000", "partitionTable": "0x8000", "application": "0x10000" },
+  "boards": {
+    "devkit": {
+      "id": "devkit",
+      "name": "ESP32-C5-DevKitC-1",
+      "subtitle": "WROOM-1-N16R8 · 16 MB flash · 8 MB PSRAM",
+      "badge": "16 MB",
+      "chip": "esp32c5",
+      "flashSize": "16MB",
+      "flashMode": "dio",
+      "flashFreq": "80m",
+      "source": "release BCfw-v0.1.0",
+      "note": "This board is normally flashed over its USB-Serial-JTAG port. If it is not detected, hold BOOT, tap RESET, release BOOT, then try again.",
+      "parts": [
+        { "name": "Bootloader",      "offset": 8192,  "path": "firmware/devkit/bootloader.bin" },
+        { "name": "Partition table", "offset": 32768, "path": "firmware/devkit/partition-table.bin" },
+        { "name": "Application",     "offset": 65536, "path": "firmware/devkit/esp32c5_deauther.bin" }
+      ]
+    },
+    "xiao": {
+      "id": "xiao",
+      "name": "Seeed XIAO ESP32-C5",
+      "subtitle": "Native USB-C · 8 MB flash",
+      "badge": "8 MB",
+      "chip": "esp32c5",
+      "flashSize": "8MB",
+      "flashMode": "dio",
+      "flashFreq": "80m",
+      "source": "local build.xiao",
+      "note": "Flashed over native USB-C. If it is not detected, hold BOOT, tap RESET, release BOOT, then try again.",
+      "parts": [
+        { "name": "Bootloader",      "offset": 8192,  "path": "firmware/xiao/bootloader.bin" },
+        { "name": "Partition table", "offset": 32768, "path": "firmware/xiao/partition-table.bin" },
+        { "name": "Application",     "offset": 65536, "path": "firmware/xiao/esp32c5_deauther.bin" }
+      ]
+    }
+  }
+}

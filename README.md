@@ -6,6 +6,21 @@ This firmware is a fork of the original version of the x1watt/esp32 c5 deauth pr
   <img src="screenshots/black-crow-firmware.jpeg" alt="Black Crow Network and Embedded Experiment Laboratory logo" width="800">
 </p>
 
+<p align="center">
+  <a href="https://padadexxtfury.github.io/Black-Crow-ESP32-Firmware/"><b>🔥 Flash your board in the browser — open the Black Crow Web Flasher</b></a>
+</p>
+
+> **Web Flasher — https://padadexxtfury.github.io/Black-Crow-ESP32-Firmware/**
+> Install the firmware straight from **Chrome** or **Edge** on desktop, with no
+> toolchain and no command line. Pick your board (**ESP32‑C5‑DevKitC‑1** or
+> **Seeed XIAO ESP32‑C5**), select the USB port, then **Erase** / **Start Flash**
+> and open a built‑in **serial monitor** — then join the Discord.
+>
+> **(ID)** Flash firmware langsung dari browser (Chrome/Edge), tanpa toolchain.
+> Pilih board, pilih port USB, lalu **Erase** / **Start Flash** dan buka **serial
+> monitor** bawaan. *Aktifkan GitHub Pages: Settings → Pages → Deploy from a
+> branch → `main` → `/docs` agar tautan di atas aktif.*
+
 # The primary focus of this project includes
 
 Firmware Development — Developing and refining the core firmware to enhance stability and extensibility, while enabling support for various features and additional modules.
@@ -113,7 +128,7 @@ BLE observations are not proof of device identity or anyone's location. Signal s
 
 ### Main board
 
-### This firmware now only supports ESP32 C5 N16R8, but maybe in the future it will support ESP32 C5 N8R4 or other RAM variants.
+### This firmware supports the ESP32-C5-DevKitC-1 (N16R8, 16 MB) and the Seeed Studio XIAO ESP32-C5 (8 MB) from one code base; other RAM variants may be added in the future.
 
 - **Board:** Espressif ESP32-C5-DevKitC-1.
 - **Module:** ESP32-C5-WROOM-1-N16R8 (16 MB flash, 8 MB quad-SPI PSRAM).
@@ -176,6 +191,43 @@ factory application and `0xA00000` bytes (10 MiB) for LittleFS. The
 configuration and partition layout are for the N16R8 memory variant; do not
 assume they fit a different board or module.
 
+#### Seeed XIAO ESP32-C5 (second board)
+
+The firmware also builds for the **Seeed Studio XIAO ESP32-C5** (8 MB flash /
+8 MB PSRAM) from the same code base. The board pin map and feature flags live in
+[`esp32-c5/main/board_config.h`](esp32-c5/main/board_config.h), selected by a
+Kconfig choice. The XIAO build uses a **separate build directory** and the
+overrides in
+[`esp32-c5/sdkconfig.defaults.xiao`](esp32-c5/sdkconfig.defaults.xiao) (8 MB
+flash size, `partitions.xiao.csv`, XIAO pin map), so it never changes the
+default DevKit build.
+
+```sh
+cd esp32-c5
+idf.py -B build.xiao \
+  -D SDKCONFIG=build.xiao/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xiao" \
+  build
+```
+
+On Windows PowerShell, use backtick line-continuations (or put it on one line):
+
+```powershell
+Set-Location ".\esp32-c5"
+idf.py -B build.xiao `
+  -D SDKCONFIG=build.xiao/sdkconfig `
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xiao" `
+  build
+```
+
+The XIAO partition table (`partitions.xiao.csv`) reserves `0x380000` bytes
+(3.5 MiB) for the factory app and `0x470000` bytes (~4.4 MiB) for LittleFS to
+fit 8 MB flash. Flash it over USB-C with `idf.py -B build.xiao -p <PORT> flash`
+(hold **BOOT**, tap **RESET**, release BOOT if it does not enter download mode).
+The plain DevKit build (`idf.py build`, `build/`) is unchanged. See
+[`esp32-c5/README.md`](esp32-c5/README.md#board-variants) for the full XIAO pin
+map and board differences (single-colour PWM LED, no UART ESP-flasher).
+
 Building does not validate optional hardware or radio behavior. Perform
 hardware tests only in a controlled, authorized lab.
 
@@ -189,6 +241,10 @@ flutter analyze
 flutter test
 flutter build apk --release
 ```
+
+Android release builds require the permanent release keystore. See
+[`flutter/README.md`](flutter/README.md#build-and-test) for local signing
+configuration, GitHub Actions secrets, and the certificate fingerprint check.
 
 The app requests Bluetooth permissions as required by Android. Older Android
 versions may also require Location permission and the Location service for BLE

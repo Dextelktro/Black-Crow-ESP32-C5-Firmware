@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'      # any tag like v1.0.0, v0.2.1-rc1
+      - 'BCfw-v*_app-v*'
   workflow_dispatch:    # allow manual trigger from the Actions tab
 
 permissions:
@@ -83,6 +83,85 @@ jobs:
           name: firmware-merged-bin
           path: release/esp32c5-deauther-merged.bin
 
+  # ─── ESP32-C5 XIAO firmware (.bin bundle) ──────────────────────────────────
+  # Seeed Studio XIAO ESP32-C5 (8 MB flash). Same chip + patched libnet as the
+  # DevKit build; differs only in the board pin map, 8 MB flash size and the
+  # partitions.xiao.csv layout (driven by sdkconfig.defaults.xiao). Runs in
+  # parallel with — and never touches — the DevKit `firmware` job above.
+  firmware-xiao:
+    name: ESP32-C5 XIAO firmware
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply patched libnet80211.a
+        run: |
+          cp esp32-c5/patched_libnet/libnet80211.a "$IDF_PATH/components/esp_wifi/lib/esp32c5/libnet80211.a"
+
+      - name: Build firmware (XIAO)
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd esp32-c5
+          # Target comes from CONFIG_IDF_TARGET in sdkconfig.defaults; a
+          # separate `set-target` would touch the default build/ dir, not
+          # build.xiao, so it is intentionally omitted here.
+          idf.py -B build.xiao \
+            -D SDKCONFIG=build.xiao/sdkconfig \
+            -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xiao" \
+            build
+
+      - name: Package release bundle
+        run: |
+          mkdir -p release/firmware
+          cp esp32-c5/build.xiao/esp32c5_deauther.bin                release/firmware/
+          cp esp32-c5/build.xiao/bootloader/bootloader.bin           release/firmware/
+          cp esp32-c5/build.xiao/partition_table/partition-table.bin release/firmware/
+          cp esp32-c5/build.xiao/flash_args                          release/firmware/
+          cat > release/firmware/README.txt <<'EOF'
+          ESP32-C5 XIAO Deauther firmware
+          ===============================
+
+          For the Seeed Studio XIAO ESP32-C5 (8 MB flash).
+
+          Flash with esptool (any OS):
+
+            python -m esptool --chip esp32c5 -b 460800 \
+              --before default_reset --after hard_reset \
+              write_flash --flash_mode dio --flash_size 8MB --flash_freq 40m \
+              0x2000  bootloader.bin \
+              0x8000  partition-table.bin \
+              0x10000 esp32c5_deauther.bin
+
+          Or use Espressif's Web Flasher:
+            https://espressif.github.io/esptool-js/
+          EOF
+          ( cd release && zip -r esp32c5-xiao-deauther-firmware.zip firmware )
+
+      - name: Build merged binary for ESP Launchpad
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd esp32-c5/build.xiao
+          esptool.py --chip esp32c5 merge_bin \
+            --output ../../release/esp32c5-xiao-deauther-merged.bin \
+            --flash_mode dio --flash_size 8MB --flash_freq 40m \
+            0x2000  bootloader/bootloader.bin \
+            0x8000  partition_table/partition-table.bin \
+            0x10000 esp32c5_deauther.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-xiao
+          path: release/esp32c5-xiao-deauther-firmware.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-xiao-merged-bin
+          path: release/esp32c5-xiao-deauther-merged.bin
+
   # ─── Flutter Android APK ───────────────────────────────────────────────────
   android:
     name: Android APK
@@ -100,41 +179,139 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Decode release keystore
-        # Writes the persistent signing keystore + key.properties from repo
-        # secrets, so every release is signed with the SAME certificate.
-        # Without this, build.gradle.kts falls back to a debug keystore that
-        # Gradle regenerates on every fresh CI runner, breaking in-place
-        # updates for users (signature mismatch -> "App not installed").
+      - name: Run Flutter checks
         working-directory: flutter
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/blackcrow-release.jks
+          flutter pub get
+          flutter analyze --no-fatal-infos
+          flutter test
+
+      - name: Decode release keystore
+        working-directory: flutter
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?GitHub Actions secret KEYSTORE_BASE64 is required}"
+          : "${KEYSTORE_PASSWORD:?GitHub Actions secret KEYSTORE_PASSWORD is required}"
+          : "${KEY_PASSWORD:?GitHub Actions secret KEY_PASSWORD is required}"
+          : "${KEY_ALIAS:?GitHub Actions secret KEY_ALIAS is required}"
+
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/blackcrow-release.jks
+          test -s android/app/blackcrow-release.jks
           cat > android/key.properties <<EOF
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
           storeFile=../app/blackcrow-release.jks
           EOF
+          keytool -list \
+            -keystore android/app/blackcrow-release.jks \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
 
       - name: Build APK (release, universal)
         working-directory: flutter
         run: |
-          flutter pub get
           # Single APK that runs on all Android architectures (arm64, armv7,
           # x86_64). Slightly larger than per-ABI splits but one file users
           # can install on any phone.
           flutter build apk --release
 
+      - name: Verify release signing certificate
+        working-directory: flutter
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ANDROID_SIGNING_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_SIGNING_CERT_SHA256:?GitHub Actions variable ANDROID_SIGNING_CERT_SHA256 is required}"
+          expected_fingerprint="$(printf '%s' "$ANDROID_SIGNING_CERT_SHA256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          if [[ ! "$expected_fingerprint" =~ ^[0-9A-F]{64}$ ]]; then
+            echo "ANDROID_SIGNING_CERT_SHA256 must be a 64-character SHA-256 fingerprint." >&2
+            exit 1
+          fi
+
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          if [[ ! -f "$apk" ]]; then
+            echo "Release APK was not created at $apk." >&2
+            exit 1
+          fi
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [[ -z "$sdk_root" ]]; then
+            echo "Android SDK path is unavailable; cannot verify APK signature." >&2
+            exit 1
+          fi
+          build_tools="$(find "$sdk_root/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n 1)"
+          apksigner="$sdk_root/build-tools/$build_tools/apksigner"
+          if [[ ! -x "$apksigner" ]]; then
+            echo "apksigner was not found in the Android SDK build-tools." >&2
+            exit 1
+          fi
+          aapt="$sdk_root/build-tools/$build_tools/aapt"
+          if [[ ! -x "$aapt" ]]; then
+            echo "aapt was not found in the Android SDK build-tools." >&2
+            exit 1
+          fi
+
+          badging="$("$aapt" dump badging "$apk")"
+          min_sdk="$(sed -n "s/^sdkVersion:'\\([0-9][0-9]*\\)'.*/\\1/p" <<< "$badging")"
+          target_sdk="$(sed -n "s/^targetSdkVersion:'\\([0-9][0-9]*\\)'.*/\\1/p" <<< "$badging")"
+          if [[ "$min_sdk" != "24" ]]; then
+            echo "Expected minSdkVersion 24 (Android 7.0), found '$min_sdk'." >&2
+            exit 1
+          fi
+          if [[ ! "$target_sdk" =~ ^[0-9]+$ ]] || (( target_sdk < 36 )); then
+            echo "Expected targetSdkVersion 36 or newer, found '$target_sdk'." >&2
+            exit 1
+          fi
+          native_code="$(sed -n 's/^native-code: //p' <<< "$badging")"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            if [[ "$native_code" != *"'$abi'"* ]]; then
+              echo "Universal APK is missing required ABI '$abi'." >&2
+              exit 1
+            fi
+          done
+
+          cert_file="$RUNNER_TEMP/blackcrow-release-cert.der"
+          keytool -exportcert \
+            -keystore android/app/blackcrow-release.jks \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" \
+            -file "$cert_file" >/dev/null
+          keystore_fingerprint="$(sha256sum "$cert_file" | awk '{ print toupper($1) }')"
+          signature_info="$("$apksigner" verify --verbose --print-certs "$apk")"
+          apk_fingerprint="$(awk -F': ' '/Signer #1 certificate SHA-256 digest:/ { gsub(/:/, "", $2); print toupper($2); exit }' <<< "$signature_info")"
+          v2_result="$(grep -F 'Verified using v2 scheme' <<< "$signature_info" || true)"
+          if [[ "$v2_result" != *": true"* ]]; then
+            echo "APK is not verified with APK Signature Scheme v2 (required for Android 7+)." >&2
+            exit 1
+          fi
+
+          if [[ "$keystore_fingerprint" != "$expected_fingerprint" ]]; then
+            echo "Configured keystore fingerprint does not match ANDROID_SIGNING_CERT_SHA256." >&2
+            exit 1
+          fi
+          if [[ "$apk_fingerprint" != "$expected_fingerprint" ]]; then
+            echo "Built APK fingerprint does not match ANDROID_SIGNING_CERT_SHA256." >&2
+            exit 1
+          fi
+          echo "Verified Android release certificate SHA-256: $apk_fingerprint"
+
       - name: Stage APK
         run: |
           mkdir -p release
           cp flutter/build/app/outputs/flutter-apk/app-release.apk \
-             release/deauther-android.apk
+             release/app-release.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: android
-          path: release/deauther-android.apk
+          path: release/app-release.apk
 
   # ─── Flutter Linux desktop ─────────────────────────────────────────────────
   linux:
@@ -178,7 +355,7 @@ jobs:
     name: Update web flasher
     needs: firmware
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/BCfw-v')
     permissions:
       contents: write
     steps:
@@ -205,9 +382,9 @@ jobs:
   # ─── Publish GitHub Release with all artifacts ─────────────────────────────
   release:
     name: Publish release
-    needs: [firmware, android, linux]
+    needs: [firmware, firmware-xiao, android, linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/BCfw-v')
     steps:
       - uses: actions/checkout@v4
 
@@ -218,9 +395,11 @@ jobs:
       - name: Lay out release files
         run: |
           mkdir -p release
-          mv artifacts/firmware/esp32c5-deauther-firmware.zip release/
-          mv artifacts/android/deauther-android.apk           release/
-          mv artifacts/linux/deauther-linux-x64.tar.gz        release/
+          mv artifacts/firmware/esp32c5-deauther-firmware.zip            release/
+          mv artifacts/firmware-xiao/esp32c5-xiao-deauther-firmware.zip  release/
+          mv artifacts/firmware-xiao-merged-bin/esp32c5-xiao-deauther-merged.bin release/
+          mv artifacts/android/app-release.apk                           release/
+          mv artifacts/linux/deauther-linux-x64.tar.gz                   release/
           ls -la release/
 
       - name: Generate SHA256 checksums
@@ -233,15 +412,46 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+          overwrite_files: true
           body: |
             **Downloads**
 
             | File | What |
             |------|------|
-            | `esp32c5-deauther-firmware.zip` | ESP32-C5 firmware bundle (bootloader + partition table + app + flash command). Flash with `esptool` or [esptool-js web flasher](https://espressif.github.io/esptool-js/). |
-            | `deauther-android.apk` | Android app — universal APK for all CPU architectures (arm64, armv7, x86_64). |
+            | `esp32c5-deauther-firmware.zip` | ESP32-C5-DevKitC-1 firmware bundle (16 MB flash: bootloader + partition table + app + flash command). Flash with `esptool` or [esptool-js web flasher](https://espressif.github.io/esptool-js/). |
+            | `esp32c5-xiao-deauther-firmware.zip` | Seeed **XIAO ESP32-C5** firmware bundle (8 MB flash). Flash with `esptool` or the web flasher. |
+            | `esp32c5-xiao-deauther-merged.bin` | Seeed **XIAO ESP32-C5** single merged image for [ESP Launchpad / esptool-js](https://espressif.github.io/esptool-js/) (write at offset `0x0`). |
+            | `app-release.apk` | Android app — universal APK for all CPU architectures (arm64, armv7, x86_64). |
             | `deauther-linux-x64.tar.gz` | Linux desktop binary. Extract and run `./deauther`. |
             | `SHA256SUMS` | Checksums for all of the above. |
+
+            **Installing the Android APK** — it is a universal, signed build for
+            all architectures, but it is not on Google Play, so Android may block
+            the sideload. If the install reaches 100% then "fails", it was
+            blocked, not corrupted:
+            1. Uninstall any older build first (a different signing key cannot update in place).
+            2. Allow your file manager/browser under *Install unknown apps*.
+            3. Samsung: Settings → Security and privacy → **Auto Blocker → off**.
+            4. If Play Protect warns, choose **Install anyway**.
+
+            **Memasang APK Android (ID)** — APK universal & bertanda tangan untuk
+            semua arsitektur, tetapi tidak ada di Google Play, jadi Android bisa
+            memblokir sideload. Kalau instalasi 100% lalu "gagal", berarti
+            diblokir, bukan rusak: (1) copot dulu versi lama; (2) izinkan file
+            manager/browser di *Pasang aplikasi tidak dikenal*; (3) Samsung:
+            Setelan → Keamanan dan privasi → **Auto Blocker → matikan**;
+            (4) kalau Play Protect memperingatkan, pilih **Tetap pasang**.
+
+            **Auto-updates with Obtainium** — add this repo in
+            [Obtainium](https://github.com/ImranR98/Obtainium) (*Add App* → paste
+            the repository URL) to install and auto-update straight from these
+            releases. **(ID)** Tambahkan repo ini di Obtainium (*Add App* → tempel
+            URL repo) untuk pasang & update otomatis dari rilis ini.
+
+            > **Updating from an older Android APK:** releases before persistent
+            > release signing may not be installable as an in-place update.
+            > Uninstalling the old app may be required and deletes its local
+            > app data; back up anything important first.
 
             > ⚠️ **Authorized testing only.** This software is published for
             > defensive security research and education. Using it against
