@@ -35,23 +35,17 @@ def median3(a, b, c):
     return sorted((a, b, c))[1]
 
 def rssi_recently_qualified(seen_above, last_above_ms, now_ms,
-                            hold_ms=100, threshold=-90):
+                            hold_ms=400, threshold=-90):
     if threshold <= -127:
         return True
     return seen_above and now_ms - last_above_ms <= hold_ms
 
-def analyzer_accept(peak, sideband_samples):
-    usable = [rssi for rssi in sideband_samples if rssi > -128]
+def analyzer_accept(coarse_peak, fine_peak):
+    """Mirror the Flipper-faithful analyzer gate: the wide coarse hop AND the
+    narrow fine scan must both clear the -93 dBm threshold. The narrow fine
+    bandwidth, not a sideband-margin test, is what rejects wideband noise."""
     minimum_rssi = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_RSSI")
-    if peak < minimum_rssi or len(usable) < 2:
-        return False
-    noise = sorted(usable)
-    middle = len(noise) // 2
-    if len(noise) % 2 == 0:
-        noise_floor = (noise[middle - 1] + noise[middle]) // 2
-    else:
-        noise_floor = noise[middle]
-    return peak - noise_floor >= 6
+    return coarse_peak >= minimum_rssi and fine_peak >= minimum_rssi
 
 def repair_short_glitches(durations, min_us=50):
     """Mirror the decoder-only cleanup: absorb a short interior pulse between
@@ -73,27 +67,18 @@ def repair_short_glitches(durations, min_us=50):
     return out
 
 def read_reports(frames, dedupe_ms=1500):
-    """Mirror Read's one-frame decode acceptance and duplicate suppression."""
+    """Mirror Read's acceptance: a decoded frame is reported on the FIRST decode
+    (no repeat confirmation) and identical repeats are suppressed for dedupe_ms.
+    Undecoded bursts (None) are NEVER reported — READ lists only genuinely
+    decoded signals, so noise never appears (matches Flipper's Read)."""
     last_reported = None
     last_reported_tick = 0
-    last_unknown_tick = 0
-    have_unknown_reported = False
     reports = []
     for decoded, tick in frames:
         if decoded is None:
             reports.append(False)
             continue
         identity = decoded[:3]
-        if identity[0] == "unknown":
-            duplicate = (
-                have_unknown_reported and
-                tick - last_unknown_tick < dedupe_ms
-            )
-            if not duplicate:
-                last_unknown_tick = tick
-                have_unknown_reported = True
-            reports.append(not duplicate)
-            continue
         duplicate = (
             identity == last_reported and
             tick - last_reported_tick < dedupe_ms
@@ -117,6 +102,27 @@ def raw_timings_match(a, b, tolerance_pct=30, min_tolerance_us=50):
 
 def strict_raw_accepts(durations, truncated):
     return bool(durations) and not truncated
+
+RAWREC_GAP_US = 15000
+RAW_MAX = 1024
+def rawrec_accumulate(frames, cap=RAW_MAX, gap=RAWREC_GAP_US):
+    """Mirror the continuous Read RAW recorder (subghz.c): append each frame into
+    ONE recording, inserting a synthesized inter-frame gap before all but the
+    first; a frame that cannot fit is dropped whole and truncation is flagged."""
+    rec, truncated = [], False
+    for f in frames:
+        pos = len(rec)
+        extra = len(f) + (1 if pos > 0 else 0)
+        if pos + extra <= cap:
+            if pos > 0:
+                rec.append(-gap)
+            rec.extend(f)
+        else:
+            truncated = True
+    return rec, truncated
+
+def strictly_alternating(seq):
+    return all((seq[i] < 0) != (seq[i + 1] < 0) for i in range(len(seq) - 1))
 
 # ---------- capture pipeline mirror (subghz_capture.c) ----------
 RX_MIN_US    = 3        # SUBGHZ_RX_MIN_NS   (C5 APB glitch filter)
@@ -142,10 +148,13 @@ def rmt_segment(stream):
         recs.append(cur)
     return recs
 
-def normalize(rec):
+def normalize(rec, despeckle=50):
     """Mirror of symbols_to_durations(): merge consecutive same-sign, drop the
-    leading space(s) and the final trailing space, no zeros. Interior gaps are
-    KEPT (the software splitter needs them)."""
+    leading space(s) and the final trailing space, no zeros, and SOFTWARE
+    de-speckle — absorb an opposite-level pulse shorter than `despeckle` us
+    (SUBGHZ_RX_DESPECKLE_US) into the surrounding level, so OOK-slicer noise the
+    3 us RMT glitch filter cannot reach is removed. Interior gaps >= despeckle
+    are KEPT (the software splitter needs them)."""
     out = []
     for v in rec:
         if v == 0:
@@ -153,9 +162,15 @@ def normalize(rec):
         if not out:
             if v < 0:
                 continue                # drop leading space
+            if v < despeckle:
+                continue                # drop leading runt mark
             out.append(v)
         elif (out[-1] < 0) == (v < 0):
             out[-1] += v                # same level: merge
+        elif abs(v) < despeckle:
+            # short opposite spike: absorb into the current level and stay on it;
+            # the next same-level fragment merges in above.
+            out[-1] += -abs(v) if out[-1] < 0 else abs(v)
         else:
             out.append(v)
     while out and out[-1] < 0:
@@ -430,17 +445,18 @@ check(c_define(PROTOCOL_SOURCE, "SUBGHZ_DECODE_GLITCH_US") == DECODE_GLITCH_US,
       "decoder-only software glitch repair uses the tested 50 us threshold")
 check(c_define(SUBGHZ_SOURCE, "SUBGHZ_DEFAULT_RSSI_THR") == -90,
       "firmware uses Flipper Unleashed's -90 dBm RAW default")
-check(c_define(SUBGHZ_SOURCE, "SUBGHZ_RSSI_CAPTURE_HOLD_MS") == 100,
+check(c_define(SUBGHZ_SOURCE, "SUBGHZ_RSSI_CAPTURE_HOLD_MS") == 400,
       "RSSI qualification is held across the RMT idle-stop callback")
 check("SUBGHZ_READ_CONFIRM_REPEATS" not in SUBGHZ_SOURCE and
+      "read_confirm_repeat" not in SUBGHZ_SOURCE and
       "read_candidate_confirmed" not in SUBGHZ_SOURCE,
-      "Read does not require a second decoded transmission")
+      "Read does not require a second decoded transmission (reports first decode)")
 check(c_define(SUBGHZ_SOURCE, "SUBGHZ_READ_DEDUPE_MS") == 1500,
       "Read suppresses duplicate reports for 1.5 seconds")
-check("if (strict_raw && truncated)" in SUBGHZ_SOURCE and
+check("if (truncated) {" in SUBGHZ_SOURCE and
       "raw_candidate_confirmed" not in SUBGHZ_SOURCE and
       c_define(SUBGHZ_SOURCE, "SUBGHZ_RAW_STRICT_DEDUPE_MS") == 1500,
-      "strict RAW accepts one complete burst and only deduplicates afterward")
+      "truncated frames dropped up front; strict RAW only deduplicates after")
 check(c_define(SUBGHZ_SOURCE, "SUBGHZ_RAW_DEDUPE_TIMING_TOLERANCE_PCT") == 30 and
       c_define(SUBGHZ_SOURCE, "SUBGHZ_RAW_DEDUPE_MIN_TOLERANCE_US") == 50,
       "strict RAW duplicate suppression uses bounded pulse timing tolerance")
@@ -449,21 +465,18 @@ check("if (!read_mode && squelch_on && !rssi_squelch_is_open())" in SUBGHZ_SOURC
 check("age <= hold" in SUBGHZ_SOURCE and
       "SUBGHZ_RSSI_CAPTURE_HOLD_MS" in SUBGHZ_SOURCE,
       "RSSI hold accounts for delayed frame delivery after RMT stop")
-check(re.search(r"decoded\s*=\s*!truncated\s*&&\s*subghz_protocol_decode",
-                SUBGHZ_SOURCE) is not None,
-      "truncated capture frames cannot become Read decode results")
-check("report_unknown = read_mode && !decoded && !truncated &&" in SUBGHZ_SOURCE and
-      "subghz: READ proto=unknown n=%u" in SUBGHZ_SOURCE and
-      "read_unknown_should_report" in SUBGHZ_SOURCE,
-      "complete RSSI-qualified undecoded frames are visible as Unknown")
+check("if (truncated) {" in SUBGHZ_SOURCE and
+      re.search(r"decoded\s*=\s*subghz_protocol_decode", SUBGHZ_SOURCE) is not None,
+      "truncated frames return before decode, so they cannot become Read results")
+check("READ proto=unknown" not in SUBGHZ_SOURCE and
+      "report_unknown" not in SUBGHZ_SOURCE and
+      "read_unknown_should_report" not in SUBGHZ_SOURCE,
+      "READ reports ONLY decoded protocols; undecoded noise is never listed")
 check("memcpy(out, durations" in PROTOCOL_SOURCE and
       "s_decode_durations" in PROTOCOL_SOURCE,
       "software glitch repair works on a private buffer, preserving RAW data")
 check(c_define(SUBGHZ_SOURCE, "SUBGHZ_RSSI_SAMPLE_COUNT") == 3,
       "firmware uses three RSSI samples per sweep point")
-check(c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_NOISE_NEAR_HZ") == 1000000 and
-      c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_NOISE_FAR_HZ") == 1500000,
-      "analyzer compares against local 1.0/1.5 MHz sidebands")
 check(rmt_segment([100, -2]) == [[100]],
       "2 us glitch removed")
 check(rmt_segment([100, -3]) == [[100, -3]],
@@ -475,6 +488,20 @@ check(repair_short_glitches([500, -49, 500]) == [1049] and
       "software glitch threshold removes 49 us but retains 50 us")
 check(repair_short_glitches([320, -320, 320]) == [320, -320, 320],
       "valid 320 us protocol timing is retained")
+# Capture-layer de-speckle (symbols_to_durations / SUBGHZ_RX_DESPECKLE_US): the
+# RAW stream itself is cleaned, not just a decoder-private copy, matching Flipper.
+check(c_define(CAPTURE_SOURCE, "SUBGHZ_RX_DESPECKLE_US") == 50,
+      "capture de-speckle uses Flipper's 50 us te_short threshold")
+check(normalize([500, -12, 600]) == [1112],
+      "a 12 us opposite-level spike is absorbed into the surrounding level")
+check(normalize([500, -60, 500]) == [500, -60, 500],
+      "a 60 us pulse (>= 50) is kept as a real edge")
+check(normalize([400, -10, 20, -15, 500]) == [945],
+      "a run of sub-50 us noise collapses to a single level in the RAW stream")
+check(normalize([30, 500, -400, 600]) == [500, -400, 600],
+      "a leading sub-50 us runt mark is dropped")
+check(normalize([400, -320, 320]) == [400, -320, 320],
+      "valid 320 us protocol pulses survive de-speckle unchanged")
 gate_noisy = gate_body(0xABCDEF)
 gate_noisy[1:2] = [-350, 12, -338]
 check(12 in gate_noisy and decode(gate_noisy) == ("GateTX", 0xABCDEF, 24),
@@ -491,13 +518,8 @@ check(read_reports([(gate_capture[0], 0), (None, 50),
 check(read_reports([(gate_capture[0], 0), (gate_capture[0], 1501)]) ==
       [True, True],
       "Read reports the same key again after the dedupe interval")
-check(read_reports([(gate_capture[0], 0),
-                    (("unknown", 0, 0), 50),
-                    (gate_capture[0], 100)]) == [True, True, False],
-      "Unknown reports do not reset known-key duplicate suppression")
-check(read_reports([(("unknown", 0, 0), 0),
-                    (("unknown", 0, 0), 100)]) == [True, False],
-      "RSSI-qualified Unknown frames are deduplicated independently")
+check(read_reports([(None, 0), (None, 100), (None, 5000)]) == [False, False, False],
+      "undecoded noise bursts are never reported (READ lists only decoded)")
 check(read_reports([(gate_capture[0], 0),
                     (("GateTX", 0xABCDEE, 24), 100)]) == [True, True],
       "a different decoded key is reported immediately")
@@ -513,9 +535,26 @@ check(strict_raw_accepts(raw_frame, False),
       "strict RAW accepts its first complete one-shot capture")
 check(not strict_raw_accepts(raw_frame, True),
       "strict RAW rejects a truncated capture without awaiting another frame")
-check(rssi_recently_qualified(True, 1000, 1100),
-      "RSSI above threshold remains qualified through a 100 ms RMT callback delay")
-check(not rssi_recently_qualified(True, 1000, 1101),
+# Continuous Read RAW recorder (default mode): all signals in ONE recording.
+check(c_define(SUBGHZ_SOURCE, "SUBGHZ_RAWREC_GAP_US") == RAWREC_GAP_US,
+      "recorder inserts a 15 ms synthesized inter-frame gap")
+_A, _B = [400, -400, 800], [500, -500, 900]
+check(rawrec_accumulate([_A])[0] == _A,
+      "the first recorded signal is appended with no leading gap")
+check(rawrec_accumulate([_A, _B])[0] == [400, -400, 800, -15000, 500, -500, 900],
+      "a second signal is appended after one inter-frame gap (all in one recording)")
+_rec3, _trunc3 = rawrec_accumulate([_A, _B, _A])
+check(strictly_alternating(_rec3) and not _trunc3,
+      "the growing recording stays strictly sign-alternating and fits the buffer")
+_big = [[1] * 200 for _ in range(10)]          # 10 x 200 + 9 gaps = 2009 > 1024
+_recb, _truncb = rawrec_accumulate(_big)
+check(len(_recb) <= RAW_MAX and _truncb,
+      "recorder caps at 1024 timings and flags truncation when the buffer fills")
+check(rawrec_accumulate([_A, [1] * (RAW_MAX - 1)])[0] == _A,
+      "a frame that would overflow the recording is dropped whole, not split")
+check(rssi_recently_qualified(True, 1000, 1400),
+      "RSSI above threshold remains qualified through a 400 ms RMT callback delay")
+check(not rssi_recently_qualified(True, 1000, 1401),
       "stale RSSI qualification expires instead of opening RAW indefinitely")
 check(not rssi_recently_qualified(False, 0, 50),
       "no above-threshold sample does not qualify default RAW mode")
@@ -523,16 +562,25 @@ check(rssi_recently_qualified(False, 0, 50, threshold=-128),
       "explicitly disabled RSSI threshold accepts RAW captures")
 check(median3(-100, -70, -101) == -100,
       "median-of-three rejects one isolated high RSSI sample")
-check(analyzer_accept(-82, [-100, -101, -99, -102]),
-      "analyzer accepts a peak with at least 6 dB local margin")
-check(c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_RSSI") == -105,
-      "analyzer absolute floor allows weak CC1101 signals down to -105 dBm")
-check(analyzer_accept(-102, [-110, -111, -109, -112]),
-      "analyzer accepts a weak peak with sufficient local margin")
-check(not analyzer_accept(-106, [-115, -116, -114, -117]),
-      "analyzer rejects a peak below its absolute RSSI floor")
-check(not analyzer_accept(-98, [-101, -100, -102, -99]),
-      "analyzer rejects a peak without local sideband margin")
+check(c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_RSSI") == -93,
+      "analyzer trigger matches Flipper's -93 dBm threshold")
+check(c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_REFINE_RADIUS_HZ") == 300000 and
+      c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_REFINE_STEP_HZ") == 20000,
+      "fine scan uses Flipper's +/-300 kHz / 20 kHz grid")
+check("SUBGHZ_ANALYZER_BW_COARSE 0x17" in SUBGHZ_SOURCE and
+      "SUBGHZ_ANALYZER_BW_FINE   0xF7" in SUBGHZ_SOURCE,
+      "coarse hop uses 650 kHz BW, fine scan uses narrow 58 kHz BW (noise reject)")
+check("SUBGHZ_ANALYZER_NOISE_NEAR_HZ" not in SUBGHZ_SOURCE and
+      "SUBGHZ_ANALYZER_MIN_MARGIN_DB" not in SUBGHZ_SOURCE,
+      "the slow sideband-margin gate is gone (narrow fine BW replaces it)")
+check(analyzer_accept(-82, -84),
+      "analyzer accepts when both coarse and fine clear the threshold")
+check(not analyzer_accept(-82, -96),
+      "a strong coarse hit that the narrow fine scan cannot confirm is rejected as noise")
+check(not analyzer_accept(-96, -96),
+      "a peak below the -93 dBm threshold is rejected")
+check(analyzer_accept(-93, -93),
+      "a peak exactly at the threshold is accepted")
 print()
 print("RESULT:", "ALL PASS" if FAIL == 0 else f"{FAIL} FAILURES")
 import sys; sys.exit(1 if FAIL else 0)

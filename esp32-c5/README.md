@@ -1,9 +1,11 @@
 # ESP32-C5 Dual-Band Deauther
 
-Firmware configured for ESP32-C5 N16R8 (16 MB flash, 8 MB quad PSRAM).
-Educational / authorized
-security testing only — use exclusively on networks you own or have
-written permission to test.
+Firmware for the ESP32-C5. Two boards are supported from one code base
+(see [Board variants](#board-variants)): the **ESP32-C5-DevKitC-1**
+(N16R8, 16 MB flash / 8 MB quad PSRAM — the default build) and the
+**Seeed Studio XIAO ESP32-C5** (8 MB flash / 8 MB PSRAM). Educational /
+authorized security testing only — use exclusively on networks you own
+or have written permission to test.
 
 ## Quick start (VS Code)
 
@@ -42,6 +44,58 @@ which uses the chip's built-in JTAG side of the USB-Serial-JTAG
 controller. The CDC side stays free, so the running firmware's CLI is
 not interrupted during flashing. After a successful flash, `flash.sh`
 sends `reset` to the running firmware, which calls `esp_restart()`.
+
+## Board variants
+
+The whole pin map lives in [`main/board_config.h`](main/board_config.h),
+selected at build time by the Kconfig choice in
+[`main/Kconfig.projbuild`](main/Kconfig.projbuild). The default is the
+DevKit; everything above (and `idf.py build`) targets it unchanged.
+
+### Build / flash the Seeed XIAO ESP32-C5
+
+The XIAO build uses a separate build directory and overrides (8 MB flash,
+`partitions.xiao.csv`, XIAO pin map) via `sdkconfig.defaults.xiao`:
+
+```bash
+# build
+idf.py -B build.xiao \
+  -D SDKCONFIG=build.xiao/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xiao" \
+  build
+
+# build + flash over USB-C (esptool; hold BOOT + tap RESET if needed)
+./flash.sh --board xiao
+```
+
+CI publishes a separate `esp32c5-xiao-deauther-firmware.zip` and a merged
+`esp32c5-xiao-deauther-merged.bin` for the web flasher.
+
+### XIAO pin map (D0–D10, all 11 pads used)
+
+| Function | XIAO GPIO | Pad | DevKit GPIO |
+|---|---|---|---|
+| SPI SCK (shared) | GPIO8 | D8 | GPIO6 |
+| SPI MISO (shared) | GPIO9 | D9 | GPIO2 |
+| SPI MOSI (shared) | GPIO10 | D10 | GPIO7 |
+| SD CS | GPIO0 | D1 | GPIO1 |
+| SD card-detect | GPIO7 | D3 | GPIO0 |
+| nRF24 CSN | GPIO11 | D6 | GPIO9 |
+| nRF24 CE | GPIO12 | D7 | GPIO8 |
+| CC1101 CS | GPIO23 | D4 | GPIO10 |
+| CC1101 GDO0 | GPIO24 | D5 | GPIO26 |
+| IR TX | GPIO1 | D0 | GPIO4 |
+| IR RX | GPIO25 | D2 | GPIO5 |
+| Status LED | GPIO27 (USER_LED, PWM) | onboard | GPIO27 (WS2812) |
+
+The CC1101 ready-indicator poll follows the shared MISO (GPIO9), same as
+on the DevKit. Differences from the DevKit:
+
+- **Status LED** is the plain single-colour USER_LED driven by LEDC PWM
+  (colours collapse to intensity), not an addressable WS2812.
+- **UART ESP-flasher is unavailable** — no pad is free for UART1, so the
+  `espflash` flash/boot commands return "not supported" (file uploads and
+  every other feature work normally).
 
 ## Project layout
 

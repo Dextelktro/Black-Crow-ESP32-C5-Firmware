@@ -17,12 +17,13 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "board_config.h"
 #include "io.h"
 #include "spi_shared_bus.h"
 #include "storage_fs.h"
 
-#define SD_CD_GPIO GPIO_NUM_0
-#define SD_CS_GPIO GPIO_NUM_1
+#define SD_CD_GPIO BOARD_SD_CD_GPIO
+#define SD_CS_GPIO BOARD_SD_CS_GPIO
 #define SD_MOUNT_POINT "/sdcard"
 #define SD_SPI_CLOCK_KHZ 20000
 #define SD_COPY_BUFFER_SIZE 512

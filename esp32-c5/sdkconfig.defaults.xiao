@@ -1,0 +1,27 @@
+# ============================================================
+# Seeed Studio XIAO ESP32-C5 — board overrides
+#
+# Applied AFTER sdkconfig.defaults (later file wins), so this file holds
+# ONLY the differences from the 16 MB ESP32-C5-DevKitC-1 build. Build with:
+#
+#   idf.py -B build.xiao \
+#     -D SDKCONFIG=build.xiao/sdkconfig \
+#     -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xiao" \
+#     build
+#
+# The DevKit build (plain `idf.py build`) is unaffected: it never reads
+# this file and keeps the default Kconfig board (CONFIG_BOARD_ESP32C5_DEVKIT).
+# ============================================================
+
+# ---------- BOARD ----------
+# Selects the XIAO pin map + feature flags in main/board_config.h
+# (see main/Kconfig.projbuild).
+CONFIG_BOARD_XIAO_ESP32C5=y
+
+# ---------- FLASH (8 MB, DevKit is 16 MB) ----------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# ---------- PARTITION TABLE (8 MB layout) ----------
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.xiao.csv"

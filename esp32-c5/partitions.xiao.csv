@@ -1,0 +1,12 @@
+# Seeed Studio XIAO ESP32-C5 — 8 MB flash partition layout.
+#
+# Same partition LABELS as the 16 MB DevKit table (partitions.csv) so the
+# firmware mounts them unchanged: "factory" app + "storage" LittleFS
+# (IR/Sub-GHz captures, see storage_fs.c / sd-less storage). Only the sizes
+# shrink to fit 8 MB. App image is ~2.5 MB, so 3.5 MB factory leaves headroom.
+#
+# Name,   Type, SubType,  Offset,    Size,     Flags
+nvs,      data, nvs,      0x9000,    0x6000,
+phy_init, data, phy,      0xf000,    0x1000,
+factory,  app,  factory,  0x10000,   0x380000,
+storage,  data, littlefs, 0x390000,  0x470000,

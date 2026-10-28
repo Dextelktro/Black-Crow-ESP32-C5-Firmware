@@ -2,10 +2,12 @@
 
 #include "driver/gpio.h"
 
+#include "board_config.h"
+
 #define SHARED_SPI_HOST SPI2_HOST
-#define SHARED_SPI_SCK GPIO_NUM_6
-#define SHARED_SPI_MISO GPIO_NUM_2
-#define SHARED_SPI_MOSI GPIO_NUM_7
+#define SHARED_SPI_SCK BOARD_SPI_SCK_GPIO
+#define SHARED_SPI_MISO BOARD_SPI_MISO_GPIO
+#define SHARED_SPI_MOSI BOARD_SPI_MOSI_GPIO
 
 static bool s_ready;
 static volatile bool s_radio_access;
@@ -17,9 +19,9 @@ esp_err_t spi_shared_bus_init(void)
     }
 
     const gpio_num_t chip_selects[] = {
-        GPIO_NUM_1,  /* SD */
-        GPIO_NUM_9,  /* nRF24 */
-        GPIO_NUM_10, /* CC1101 */
+        BOARD_SD_CS_GPIO,     /* SD */
+        BOARD_NRF24_CSN_GPIO, /* nRF24 */
+        BOARD_CC1101_CS_GPIO, /* CC1101 */
     };
     uint64_t cs_mask = 0;
     for (size_t i = 0; i < sizeof(chip_selects) / sizeof(chip_selects[0]); i++) {

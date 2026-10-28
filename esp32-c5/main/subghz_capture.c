@@ -12,15 +12,27 @@
 #include "driver/rmt_rx.h"
 #include "esp_timer.h"
 
+#include "board_config.h"
 #include "io.h"
 
-#define SUBGHZ_GDO0_GPIO        26
+#define SUBGHZ_GDO0_GPIO        BOARD_CC1101_GDO0_GPIO
 #define SUBGHZ_RX_RESOLUTION_HZ 1000000     /* 1 tick = 1 us (see static assert) */
 #define SUBGHZ_RX_MEM_SYMBOLS   48          /* channel memory block (>=48, even) */
 #define SUBGHZ_RX_BUF_SYMBOLS   512         /* up to 1024 edges per burst */
 #define SUBGHZ_RX_BUFFER_COUNT  2
 #define SUBGHZ_RX_MIN_NS        3000       /* C5 APB filter limit is < 3187 ns */
 #define SUBGHZ_RX_MIN_EDGES     16           /* shorter frames are noise fragments */
+
+/* Software noise de-speckle (Flipper's te_short, lib/subghz/protocols/raw.c).
+ * The ESP32-C5 RMT glitch filter (signal_range_min_ns) is capped at ~3187 ns
+ * (RMT_LL_MAX_FILTER_VALUE / clk_MHz), so it cannot reject the 3..50 us runts an
+ * OOK slicer emits on noise. Flipper drops pulses <= 50 us in SOFTWARE instead;
+ * we do the same here. A short pulse of the OPPOSITE level to its neighbours is
+ * absorbed into the surrounding level (it was a demod glitch, not a real edge),
+ * which collapses noise bursts into far fewer edges so they fail the MIN_EDGES
+ * and decoder checks. 50 us is safely below the shortest real protocol element
+ * (CAME Te = 320 us), so no valid signal is touched. */
+#define SUBGHZ_RX_DESPECKLE_US  50
 
 /* --- Capture boundary: two SEPARATE concepts (Stage 7 Part C) ---------------
  * The RMT peripheral ends a reception when any single level (HIGH or LOW)
@@ -151,9 +163,20 @@ static size_t symbols_to_durations(const rmt_symbol_word_t *sym, size_t num,
             int32_t v = lvl ? (int32_t)dur : -(int32_t)dur;
             if (n == 0) {
                 if (v < 0) continue;            /* drop leading space(s) */
+                if (dur < SUBGHZ_RX_DESPECKLE_US) continue; /* drop leading runt */
                 out[n++] = v;
             } else if ((out[n - 1] < 0) == (v < 0)) {
                 int64_t merged = (int64_t)out[n - 1] + v;   /* same level: merge */
+                if (merged > INT32_MAX) merged = INT32_MAX;
+                if (merged < INT32_MIN) merged = INT32_MIN;
+                out[n - 1] = (int32_t)merged;
+            } else if (dur < SUBGHZ_RX_DESPECKLE_US) {
+                /* Short OPPOSITE-level spike: a demod glitch, not a real edge.
+                 * Absorb its duration into the current level and stay on it, so
+                 * the next (same-level) fragment merges in above. This removes
+                 * the spike without breaking the strictly-alternating invariant. */
+                int32_t mag = (int32_t)dur;
+                int64_t merged = (int64_t)out[n - 1] + (out[n - 1] < 0 ? -mag : mag);
                 if (merged > INT32_MAX) merged = INT32_MAX;
                 if (merged < INT32_MIN) merged = INT32_MIN;
                 out[n - 1] = (int32_t)merged;

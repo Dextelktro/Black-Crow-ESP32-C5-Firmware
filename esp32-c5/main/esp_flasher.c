@@ -11,15 +11,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
+#include "board_config.h"
 #include "io.h"
 #include "esp_upload.h"
 #include "sd_storage.h"
 #include "storage_fs.h"
 
 #define FLASHER_UART_PORT       UART_NUM_1
-#define FLASHER_UART_TX_GPIO    GPIO_NUM_25
-#define FLASHER_UART_RX_GPIO    GPIO_NUM_3
-#define FLASHER_BOOT_GPIO       GPIO_NUM_23
+#define FLASHER_UART_TX_GPIO    BOARD_FLASHER_UART_TX_GPIO
+#define FLASHER_UART_RX_GPIO    BOARD_FLASHER_UART_RX_GPIO
+#define FLASHER_BOOT_GPIO       BOARD_FLASHER_BOOT_GPIO
 #define FLASHER_RESET_GPIO      (-1)
 #define FLASHER_UART_RX_BUFFER  2048
 #define FLASHER_FLASH_BLOCK    1024
@@ -798,6 +799,10 @@ esp_err_t esp_flasher_batch_add_image(
 
 esp_err_t esp_flasher_batch_start(void)
 {
+#if !BOARD_HAS_ESP_FLASHER
+    flasher_log("ESP-flasher is not supported on this board (no spare UART pins)");
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
     portENTER_CRITICAL(&s_state_lock);
     if (s_busy || !s_batch_staging || s_manual_boot_active ||   /* FIX: tolak kalau BOOT sedang dipegang manual */
         s_staged_image_count != s_staged_batch.image_count ||
@@ -923,6 +928,10 @@ esp_err_t esp_flasher_reset_target(void)
 
 esp_err_t esp_flasher_enter_bootloader(void)
 {
+#if !BOARD_HAS_ESP_FLASHER
+    flasher_log("ESP-flasher is not supported on this board (no spare UART pins)");
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
     /* FIX: klaim s_manual_boot_active DI DALAM lock, bersamaan dengan cek
      * s_busy/esp_upload_is_busy() — menutup celah race yang sebelumnya ada
      * antara "cek tidak busy" dan "mulai sentuh GPIO" (lihat pembahasan

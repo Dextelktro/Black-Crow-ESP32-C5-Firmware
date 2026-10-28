@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "board_config.h"
 #include "ir_db.h"
 
 /* ============================================================
@@ -13,8 +14,8 @@
  * the WiFi / BLE / nRF24 radios, so IR never contends for them).
  * ============================================================ */
 
-#define IR_TX_GPIO 4
-#define IR_RX_GPIO 5
+#define IR_TX_GPIO BOARD_IR_TX_GPIO
+#define IR_RX_GPIO BOARD_IR_RX_GPIO
 
 esp_err_t ir_module_init(void);
 bool      ir_module_ready(void);

@@ -71,14 +71,16 @@ void subghz_spectrum_list_bands(void);
 
 /* ---- Stage 3: Read RAW (async OOK edge capture + RSSI-qualified capture) ---- */
 
-/* Start/stop continuous raw capture. Captured bursts with a recent above-
- * threshold RSSI sample are streamed as `subghz: RAW ...` + chunked `subghz:
- * RAWBIN ...` and kept as the last capture (for save/emulate). Strict mode
- * accepts the first complete waveform immediately and suppresses similar
- * duplicates; it does not require a second transmission. Default mode also
- * preserves truncated captures for recovery. Reported `fq` is the verified
- * receiver tune, not an independent measurement of the transmitter's carrier
- * frequency. */
+/* Start/stop continuous raw capture. Each captured frame with a recent above-
+ * threshold RSSI sample is streamed as `subghz: RAW ...` + chunked `subghz:
+ * RAWBIN ...`.
+ *   DEFAULT (strict=false) -> CONTINUOUS RECORDER (Flipper Read RAW model):
+ *     every frame is appended, with a synthesized inter-frame gap, into one
+ *     growing recording, so `save`/`tx` cover ALL detected signals in one file.
+ *   strict=true -> keep ONE clean waveform and suppress near-duplicate repeats;
+ *     save/tx use that single signal.
+ * Reported `fq` is the verified receiver tune, not an independent measurement of
+ * the transmitter's carrier frequency. */
 esp_err_t subghz_readraw_start(bool strict);
 esp_err_t subghz_readraw_stop(void);
 
@@ -101,6 +103,15 @@ void subghz_readraw_stats(void);
  * refused. Emits NOCAP if nothing has been captured, no-storage-target if the
  * target is unset, or sd-absent if SD is selected but missing. */
 esp_err_t subghz_save(const char *name);
+
+/* Save a decoded protocol as a Flipper SubGhz Key File from explicit fields —
+ * used by the app to save ANY signal the user picks from the Read list, not
+ * just the firmware's most recent decode. Validates proto/bits/key/freq and
+ * resolves `preset_id` (CLI token, e.g. "ook650"; NULL/unknown -> current).
+ * Allowed while a Read/Read-RAW capture is active; refused during TX/sweep. */
+esp_err_t subghz_save_key_fields(const char *name, const char *proto_name,
+                                 int bits, uint64_t key, uint32_t te,
+                                 uint32_t freq, const char *preset_id);
 
 /* Print one stored file's kind + fields (RAW: n/freq/preset; KEY:
  * proto/bits/key/te/freq/preset). Refused while a sweep/capture/TX is active. */

@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "board_config.h"
 #include "cc1101_regs.h"
 #include "spi_shared_bus.h"
 
@@ -26,9 +27,9 @@
  * wakes it on demand and returns it to sleep when it stops.
  * ============================================================ */
 
-#define CC1101_CS            GPIO_NUM_10
-#define CC1101_GDO0          GPIO_NUM_26
-#define CC1101_MISO          GPIO_NUM_2   /* SO ready indicator while CS low */
+#define CC1101_CS            BOARD_CC1101_CS_GPIO
+#define CC1101_GDO0          BOARD_CC1101_GDO0_GPIO
+#define CC1101_MISO          BOARD_CC1101_MISO_GPIO   /* SO ready indicator while CS low */
 #define CC1101_SPI_CLOCK_HZ  2000000
 #define CC1101_READY_TIMEOUT_US 1000
 #define CC1101_RSSI_OFFSET   74           /* dBm offset (datasheet, 433 MHz) */

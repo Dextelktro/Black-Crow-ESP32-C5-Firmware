@@ -5,6 +5,7 @@
 .vscode/ipch
 .cache/
 build/
+build.xiao/
 sdkconfig
 sdkconfig.old
 managed_components/

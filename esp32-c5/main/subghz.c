@@ -10,6 +10,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "board_config.h"
 #include "cc1101.h"
 #include "cc1101_regs.h"
 #include "io.h"
@@ -30,12 +31,18 @@
 #define SUBGHZ_SPEC_MIN_SPAN   100000UL
 #define SUBGHZ_SPEC_MAX_SPAN   20000000UL
 #define SUBGHZ_RSSI_FLOOR      (-128)
-#define SUBGHZ_ANALYZER_MIN_RSSI (-105)
-#define SUBGHZ_ANALYZER_MIN_MARGIN_DB 6
-#define SUBGHZ_ANALYZER_REFINE_RADIUS_HZ 150000
-#define SUBGHZ_ANALYZER_REFINE_STEP_HZ   25000
-#define SUBGHZ_ANALYZER_NOISE_NEAR_HZ 1000000
-#define SUBGHZ_ANALYZER_NOISE_FAR_HZ  1500000
+/* Frequency analyzer, ported faithfully from Flipper's
+ * subghz_frequency_analyzer_worker.c: a -93 dBm trigger, a wide coarse hop then
+ * a narrow ±300 kHz / 20 kHz fine scan. The narrow fine bandwidth is what both
+ * resolves the carrier and rejects noise, so no extra sideband-margin test is
+ * needed (that only added latency and could drop weak real signals). */
+#define SUBGHZ_ANALYZER_MIN_RSSI (-93)   /* SUBGHZ_FREQUENCY_ANALYZER_THRESHOLD */
+#define SUBGHZ_ANALYZER_REFINE_RADIUS_HZ 300000
+#define SUBGHZ_ANALYZER_REFINE_STEP_HZ   20000
+/* RX bandwidth (MDMCFG4) for the two stages, verbatim from Flipper: wide for the
+ * coarse hop, narrow for the fine scan. */
+#define SUBGHZ_ANALYZER_BW_COARSE 0x17   /* 650 kHz (0b00010111) */
+#define SUBGHZ_ANALYZER_BW_FINE   0xF7   /* 58 kHz  (0b11110111) */
 
 /* Read RAW */
 #define SUBGHZ_RAW_CHUNK        16     /* durations per RAWBIN line (fits 256B) */
@@ -44,18 +51,23 @@
 #define SUBGHZ_RSSI_POLL_MS     2      /* RSSI sampling period */
 #define SUBGHZ_RSSI_CAPTURE_HOLD_MS 400 /* RMT idle-stop + callback latency */
 #define SUBGHZ_RSSI_SAMPLE_COUNT 3     /* median RSSI samples for sweep measurements */
-#define SUBGHZ_READ_DEDUPE_MS 1500
-#define SUBGHZ_READ_CONFIRM_WINDOW_MS 350 /* Longer than a natural repeat interval so two
-                                            * repeats within one button press can confirm. */
+#define SUBGHZ_READ_DEDUPE_MS 1500        /* suppress identical repeats while a
+                                            * remote key is held down */
 #define SUBGHZ_RAW_STRICT_DEDUPE_MS 1500
 #define SUBGHZ_RAW_DEDUPE_TIMING_TOLERANCE_PCT 30
 #define SUBGHZ_RAW_DEDUPE_MIN_TOLERANCE_US 50
+/* Synthesized silence inserted between captured frames in the continuous Read
+ * RAW recording. The frame splitter trims the real inter-frame gap, so one is
+ * re-inserted on replay — long enough that a receiver sees distinct signals,
+ * short enough to keep the recording compact. (Flipper keeps the real gap; we
+ * approximate it since our pipeline segments frames for the decoder.) */
+#define SUBGHZ_RAWREC_GAP_US 15000
 
 _Static_assert(SUBGHZ_RSSI_SAMPLE_COUNT == 3,
                "median_of_three requires exactly three RSSI samples");
 
 /* TX / emulate */
-#define SUBGHZ_GDO0_GPIO          26     /* CC1101 GDO0 (async serial data line) */
+#define SUBGHZ_GDO0_GPIO          BOARD_CC1101_GDO0_GPIO  /* CC1101 GDO0 (async serial data line) */
 #define SUBGHZ_TX_DEFAULT_REPEATS 3
 #define SUBGHZ_TX_MAX_REPEATS     100    /* bound total TX time */
 #define SUBGHZ_TX_GAP_MS          20     /* silence between repeated frames */
@@ -108,11 +120,6 @@ static bool s_have_decoded;              /* s_last_decoded matches s_raw_last  *
 static subghz_decoded_t s_read_last_reported;
 static TickType_t s_read_last_reported_tick;
 static bool s_read_have_reported;
-static subghz_decoded_t s_read_pending;        /* candidate awaiting repeat confirmation */
-static TickType_t s_read_pending_tick;
-static bool s_read_have_pending;
-static TickType_t s_read_unknown_last_reported_tick;
-static bool s_read_have_unknown_reported;
 static bool s_readraw_strict;
 static bool s_raw_have_reported;
 static TickType_t s_raw_last_reported_tick;
@@ -463,23 +470,62 @@ static void spectrum_sweep(uint32_t seq)
     }
 }
 
+/* One fast RSSI sample at hz for an analyzer hop: tune, enter RX, confirm RX,
+ * settle 2 ms (Flipper's furi_delay_ms(2)), read ONE sample. No 3-sample median
+ * — the analyzer takes the peak across dozens of steps, so per-step smoothing is
+ * unnecessary and only adds latency (the user's "delay" complaint). Returns dBm
+ * or SUBGHZ_RSSI_FLOOR on error / no settle. */
+static int measure_rssi_fast(uint32_t hz)
+{
+    if (cc1101_set_frequency(hz) != ESP_OK) return SUBGHZ_RSSI_FLOOR;
+    if (cc1101_strobe(CC1101_STROBE_SRX, NULL) != ESP_OK) return SUBGHZ_RSSI_FLOOR;
+    bool in_rx = false;
+    for (int i = 0; i < 4; i++) {
+        uint8_t st = 0;
+        if (cc1101_read_marcstate(&st) == ESP_OK && st == CC1101_MARC_STATE_RX) {
+            in_rx = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (!in_rx) return SUBGHZ_RSSI_FLOOR;
+    vTaskDelay(pdMS_TO_TICKS(2));
+    uint8_t raw = 0;
+    if (cc1101_read_status(CC1101_STATUS_RSSI, &raw) != ESP_OK) {
+        return SUBGHZ_RSSI_FLOOR;
+    }
+    return cc1101_rssi_raw_to_dbm(raw);
+}
+
+/* Switch the analyzer RX bandwidth (MDMCFG4). The chip must be idle while a
+ * demod register is rewritten; the next SRX (in measure_rssi_fast) recalibrates. */
+static void analyzer_set_bandwidth(uint8_t mdmcfg4)
+{
+    (void)cc1101_idle();
+    (void)cc1101_write_reg(CC1101_MDMCFG4, mdmcfg4);
+}
+
 static void analyzer_scan(void)
 {
+    /* COARSE: wide 650 kHz, hop the band list, find the strongest frequency. */
+    analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_COARSE);
     int peak = SUBGHZ_RSSI_FLOOR;
     uint32_t peakfq = 0;
     for (size_t i = 0; i < SUBGHZ_HOP_N && s_run; i++) {
-        int r = measure_rssi_at(s_hoplist[i]);
+        int r = measure_rssi_fast(s_hoplist[i]);
         if (r > peak) { peak = r; peakfq = s_hoplist[i]; }
     }
     if (!s_run) return;
-
-    if (peak < SUBGHZ_ANALYZER_MIN_RSSI) {
+    if (peak < SUBGHZ_ANALYZER_MIN_RSSI || peakfq == 0) {
         io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
         return;
     }
 
-    int refined_peak = SUBGHZ_RSSI_FLOOR;
-    uint32_t refined_freq = peakfq;
+    /* FINE: narrow 58 kHz, scan ±300 kHz / 20 kHz around the coarse peak. The
+     * narrow bandwidth resolves the carrier and rejects wideband noise. */
+    analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_FINE);
+    int fine_peak = SUBGHZ_RSSI_FLOOR;
+    uint32_t fine_fq = peakfq;
     for (int32_t offset = -SUBGHZ_ANALYZER_REFINE_RADIUS_HZ;
          offset <= SUBGHZ_ANALYZER_REFINE_RADIUS_HZ && s_run;
          offset += SUBGHZ_ANALYZER_REFINE_STEP_HZ) {
@@ -487,61 +533,23 @@ static void analyzer_scan(void)
         if (candidate < 0 || !subghz_frequency_valid((uint32_t)candidate)) {
             continue;
         }
-        int r = measure_rssi_at((uint32_t)candidate);
-        if (r > refined_peak) {
-            refined_peak = r;
-            refined_freq = (uint32_t)candidate;
+        int r = measure_rssi_fast((uint32_t)candidate);
+        if (r > fine_peak) {
+            fine_peak = r;
+            fine_fq = (uint32_t)candidate;
         }
     }
+    analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_COARSE);   /* restore for next pass */
     if (!s_run) return;
 
-    /* Compare the refined channel against nearby sidebands outside the
-     * widest configured receive bandwidth (650 kHz). */
-    static const int32_t noise_offsets[] = {
-        -SUBGHZ_ANALYZER_NOISE_FAR_HZ,
-        -SUBGHZ_ANALYZER_NOISE_NEAR_HZ,
-        SUBGHZ_ANALYZER_NOISE_NEAR_HZ,
-        SUBGHZ_ANALYZER_NOISE_FAR_HZ,
-    };
-    int noise_samples[sizeof(noise_offsets) / sizeof(noise_offsets[0])];
-    size_t noise_count = 0;
-    for (size_t i = 0;
-         i < sizeof(noise_offsets) / sizeof(noise_offsets[0]) && s_run;
-         i++) {
-        int64_t candidate = (int64_t)refined_freq + noise_offsets[i];
-        if (candidate < 0 || !subghz_frequency_valid((uint32_t)candidate)) {
-            continue;
-        }
-        int rssi = measure_rssi_at((uint32_t)candidate);
-        if (rssi > SUBGHZ_RSSI_FLOOR) noise_samples[noise_count++] = rssi;
-    }
-    if (!s_run) return;
-
-    if (noise_count < 2) {
-        io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
-        return;
-    }
-    for (size_t i = 1; i < noise_count; i++) {
-        int value = noise_samples[i];
-        size_t j = i;
-        while (j > 0 && noise_samples[j - 1] > value) {
-            noise_samples[j] = noise_samples[j - 1];
-            j--;
-        }
-        noise_samples[j] = value;
-    }
-    int noise_median = noise_samples[noise_count / 2];
-    if (noise_count % 2 == 0) {
-        noise_median = (noise_samples[noise_count / 2 - 1] +
-                        noise_samples[noise_count / 2]) / 2;
-    }
-    if (refined_peak < SUBGHZ_ANALYZER_MIN_RSSI ||
-        refined_peak - noise_median < SUBGHZ_ANALYZER_MIN_MARGIN_DB) {
+    /* The narrow fine scan must ALSO clear the threshold; if it does not, the
+     * wide coarse hit was noise spread across the band, not a real carrier. */
+    if (fine_peak < SUBGHZ_ANALYZER_MIN_RSSI) {
         io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
         return;
     }
     io_log("subghz: ANALYZER peakfq=%lu rssi=%d\r\n",
-           (unsigned long)refined_freq, refined_peak);
+           (unsigned long)fine_fq, fine_peak);
 }
 
 static bool decoded_frame_matches(const subghz_decoded_t *a,
@@ -549,21 +557,6 @@ static bool decoded_frame_matches(const subghz_decoded_t *a,
 {
     /* TE can vary between captures; identity is protocol, bit count, and key. */
     return a->proto == b->proto && a->bits == b->bits && a->key == b->key;
-}
-
-/* Require the same protocol, bit count, and key twice within a short window
- * before treating a decode as a detected signal. */
-static bool read_confirm_repeat(const subghz_decoded_t *decoded)
-{
-    TickType_t now = xTaskGetTickCount();
-    TickType_t window = pdMS_TO_TICKS(SUBGHZ_READ_CONFIRM_WINDOW_MS);
-    bool confirmed = s_read_have_pending &&
-                     decoded_frame_matches(&s_read_pending, decoded) &&
-                     (TickType_t)(now - s_read_pending_tick) < window;
-    s_read_pending = *decoded;
-    s_read_pending_tick = now;
-    s_read_have_pending = true;
-    return confirmed;
 }
 
 static bool read_should_report(const subghz_decoded_t *decoded)
@@ -578,19 +571,6 @@ static bool read_should_report(const subghz_decoded_t *decoded)
     s_read_last_reported = *decoded;
     s_read_last_reported_tick = now;
     s_read_have_reported = true;
-    return true;
-}
-
-static bool read_unknown_should_report(void)
-{
-    TickType_t now = xTaskGetTickCount();
-    TickType_t dedupe_window = pdMS_TO_TICKS(SUBGHZ_READ_DEDUPE_MS);
-    if (s_read_have_unknown_reported &&
-        (TickType_t)(now - s_read_unknown_last_reported_tick) < dedupe_window) {
-        return false;
-    }
-    s_read_unknown_last_reported_tick = now;
-    s_read_have_unknown_reported = true;
     return true;
 }
 
@@ -666,55 +646,41 @@ static void raw_capture_cb(const int32_t *durations, size_t count,
         bool fm = cp && cp->fm;   /* capture modulation (explicit preset flag) */
         decoded = subghz_protocol_decode(durations, count, fm, &dec);
     }
-    bool decoded_accepted = decoded && read_confirm_repeat(&dec);
+    /* A successful protocol decode is already a precise match of dozens of
+     * edges against protocol-specific timing — the strongest possible noise
+     * filter — so it is reported on the FIRST decode (no repeat confirmation),
+     * matching Flipper's Read, which shows a signal the instant it decodes.
+     * READ mode NEVER reports an undecoded "unknown" burst: that path was the
+     * main noise source the user saw (any RSSI-qualified burst, with no
+     * protocol validation at all, was shown as a signal). Only genuinely
+     * decoded remote signals appear now. */
+    bool decoded_accepted = decoded;
     bool report_decoded = false;
-    /* FIX: unknown-burst TIDAK punya validasi protokol sama sekali — beda
-     * dari jalur decoded yang sudah tervalidasi puluhan edge presisi.
-     * Gerbang RSSI di sini saja (bukan di jalur decoded di atas) supaya
-     * tidak melanggar rasional squelch-bypass yang sudah ada untuk decode
-     * sukses, sambil tetap menutup sumber noise terbesar: burst gagal-decode
-     * yang sebelumnya lolos tanpa validasi apa pun. */
-    bool report_unknown = read_mode && !decoded && rssi_squelch_is_open();
 
-    /* Keep the waveform and its decoded fields as one atomic snapshot. In READ
-     * mode, one complete decoded frame is sufficient. Preserve an already
-     * selected decode when an unrelated or undecodable burst arrives. */
+    /* Three distinct snapshot behaviours share one buffer (s_raw_last):
+     *   READ      -> keep the latest complete burst (for save as Key/RAW),
+     *   strict RAW -> keep one clean waveform + suppress near-duplicate repeats,
+     *   RAW (default) -> CONTINUOUS RECORDER: append every frame (+ a synthesized
+     *                    inter-frame gap) into one growing recording, like
+     *                    Flipper's Read RAW, so save/transmit cover ALL detected
+     *                    signals, not just the last one. */
     bool emit_raw_capture = true;
     if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) == pdTRUE) {
         bool preserve_decoded = read_mode && s_have_decoded && !decoded_accepted;
         bool capture_updated = false;
         TickType_t now = xTaskGetTickCount();
-        TickType_t raw_dedupe_window =
-            pdMS_TO_TICKS(SUBGHZ_RAW_STRICT_DEDUPE_MS);
-        bool duplicate_raw = strict_raw && s_raw_last &&
-            s_raw_have_reported && s_raw_last_count == count &&
-            s_raw_last_freq == s_freq &&
-            raw_timings_match(s_raw_last, s_raw_last_count, durations, count) &&
-            (TickType_t)(now - s_raw_last_reported_tick) < raw_dedupe_window;
-        if (duplicate_raw) emit_raw_capture = false;
-        if (s_raw_last && !preserve_decoded) {
-            if (!duplicate_raw) {
+
+        if (read_mode) {
+            if (s_raw_last && !preserve_decoded) {
                 size_t m = count > SUBGHZ_RAW_MAX_TIMINGS ? SUBGHZ_RAW_MAX_TIMINGS
                                                           : count;
                 memcpy(s_raw_last, durations, m * sizeof(int32_t));
                 s_raw_last_count = m;
                 s_raw_last_freq = s_freq;
                 s_raw_last_preset = s_preset;
-                s_raw_last_truncated = truncated;   /* selalu false di titik ini */
-                capture_updated = true;
-            } else {
+                s_raw_last_truncated = false;   /* truncated dropped up front */
                 capture_updated = true;
             }
-        }
-        if (strict_raw) {
-            if (capture_updated && !duplicate_raw) {
-                s_raw_have_reported = true;
-                s_raw_last_reported_tick = now;
-            } else {
-                emit_raw_capture = false;
-            }
-        }
-        if (read_mode) {
             if (decoded_accepted && capture_updated) {
                 s_last_decoded = dec;     /* for `save` as a protocol Key File */
                 s_have_decoded = true;
@@ -722,17 +688,51 @@ static void raw_capture_cb(const int32_t *durations, size_t count,
             } else if (!preserve_decoded && capture_updated) {
                 s_have_decoded = false;
             }
-            if (report_unknown) {
-                report_unknown = read_unknown_should_report();
+        } else if (strict_raw) {
+            TickType_t raw_dedupe_window =
+                pdMS_TO_TICKS(SUBGHZ_RAW_STRICT_DEDUPE_MS);
+            bool duplicate_raw = s_raw_last && s_raw_have_reported &&
+                s_raw_last_count == count && s_raw_last_freq == s_freq &&
+                raw_timings_match(s_raw_last, s_raw_last_count, durations, count) &&
+                (TickType_t)(now - s_raw_last_reported_tick) < raw_dedupe_window;
+            if (duplicate_raw || !s_raw_last) {
+                emit_raw_capture = false;
+            } else {
+                size_t m = count > SUBGHZ_RAW_MAX_TIMINGS ? SUBGHZ_RAW_MAX_TIMINGS
+                                                          : count;
+                memcpy(s_raw_last, durations, m * sizeof(int32_t));
+                s_raw_last_count = m;
+                s_raw_last_freq = s_freq;
+                s_raw_last_preset = s_preset;
+                s_raw_last_truncated = false;
+                s_raw_have_reported = true;
+                s_raw_last_reported_tick = now;
             }
-        } else {
+            s_have_decoded = false;
+        } else {   /* recorder */
+            if (s_raw_last) {
+                size_t pos = s_raw_last_count;
+                size_t extra = count + (pos > 0 ? 1u : 0u);   /* +1 for the gap */
+                if (pos + extra <= SUBGHZ_RAW_MAX_TIMINGS) {
+                    if (pos > 0) {
+                        s_raw_last[pos++] = -(int32_t)SUBGHZ_RAWREC_GAP_US;
+                    }
+                    memcpy(&s_raw_last[pos], durations, count * sizeof(int32_t));
+                    s_raw_last_count = pos + count;
+                    s_raw_last_freq = s_freq;
+                    s_raw_last_preset = s_preset;
+                } else {
+                    /* Recording buffer full: keep what we have intact and flag
+                     * that later signals were dropped (the app warns on save). */
+                    s_raw_last_truncated = true;
+                }
+            }
             s_have_decoded = false;
         }
         xSemaphoreGive(s_lock);
     } else {
         io_log("subghz: ERR capture-lock\r\n");
         if (strict_raw) emit_raw_capture = false;
-        report_unknown = false;   /* FIX: fail-closed, jangan lewati dedupe 1.5s */
     }
 
     if (read_mode) {
@@ -743,9 +743,6 @@ static void raw_capture_cb(const int32_t *durations, size_t count,
                    (unsigned long)(uint32_t)(dec.key >> 32),
                    (unsigned long)(uint32_t)(dec.key & 0xFFFFFFFFULL),
                    (unsigned long)dec.te, (unsigned long)s_freq, s_last_rssi);
-        } else if (report_unknown) {
-            io_log("subghz: READ proto=unknown n=%u fq=%lu rssi=%d\r\n",
-                   (unsigned)count, (unsigned long)s_freq, s_last_rssi);
         }
         return;
     }
@@ -1022,6 +1019,13 @@ static void subghz_worker(void *arg)
     }
 
     bool spectrum = (mode == SUBGHZ_MODE_SPECTRUM);
+    if (!spectrum) {
+        /* Force the analyzer into a known AM / 650 kHz config (Flipper loads its
+         * own analyzer presets) so RSSI, AGC and bandwidth are consistent no
+         * matter which preset the user had selected. analyzer_scan then toggles
+         * MDMCFG4 between the coarse and fine bandwidths. */
+        (void)subghz_preset_apply(subghz_preset_get(SUBGHZ_PRESET_OOK_650));
+    }
     io_log(spectrum ? "subghz: SPECTRUM START\r\n" : "subghz: ANALYZER START\r\n");
     uint32_t seq = 0;
     while (s_run) {
@@ -1236,11 +1240,6 @@ static esp_err_t start_capture_mode(subghz_mode_t mode, bool strict_raw)
     memset(&s_read_last_reported, 0, sizeof(s_read_last_reported));
     s_read_last_reported_tick = 0;
     s_read_have_reported = false;
-    s_read_unknown_last_reported_tick = 0;
-    s_read_have_unknown_reported = false;
-    s_read_have_pending = false;
-    s_read_pending_tick = 0;
-    memset(&s_read_pending, 0, sizeof(s_read_pending));
     s_readraw_strict = (mode == SUBGHZ_MODE_READ_RAW) && strict_raw;
     s_raw_have_reported = false;
     s_raw_last_reported_tick = 0;
@@ -1415,6 +1414,54 @@ esp_err_t subghz_save(const char *name)
     }
     heap_caps_free(snapshot);
 
+    if (err == ESP_ERR_INVALID_STATE) {
+        io_log("subghz: ERR no-storage-target (set `subghz storage <littlefs|sd>`)\r\n");
+    } else if (err == ESP_ERR_NOT_FOUND) {
+        io_log("subghz: ERR sd-absent\r\n");
+    }
+    return err;
+}
+
+esp_err_t subghz_save_key_fields(const char *name, const char *proto_name,
+                                 int bits, uint64_t key, uint32_t te,
+                                 uint32_t freq, const char *preset_id)
+{
+    if (!s_ready) return ESP_ERR_INVALID_STATE;
+    if (!name || !proto_name) return ESP_ERR_INVALID_ARG;
+    /* Writing a .sub uses the shared SPI bus (SD) but never the radio, so it is
+     * allowed while a Read/Read-RAW capture is listening (mirrors subghz_save);
+     * only an active TX/sweep is refused. */
+    bool capture_active =
+        (s_mode == SUBGHZ_MODE_READ || s_mode == SUBGHZ_MODE_READ_RAW);
+    if (subghz_is_busy() && !capture_active) {
+        io_log("subghz: ERR busy (stop TX/sweep before saving)\r\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    subghz_proto_id_t proto = subghz_protocol_from_name(proto_name);
+    if (proto == SUBGHZ_PROTO_UNKNOWN) {
+        io_log("subghz: ERR savekey-proto-unknown %s\r\n", proto_name);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (bits <= 0 || bits > 64) {
+        io_log("subghz: ERR savekey-bits %d\r\n", bits);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (bits < 64 && (key >> bits) != 0) {
+        io_log("subghz: ERR savekey-key-overflow bits=%d\r\n", bits);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (freq == 0 || !subghz_frequency_valid(freq)) {
+        io_log("subghz: ERR savekey-freq-invalid %lu\r\n", (unsigned long)freq);
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Resolve the preset by its CLI token; fall back to the current preset so a
+     * missing/unknown token never blocks the save. */
+    const subghz_preset_t *p =
+        preset_id ? subghz_preset_from_name(preset_id) : NULL;
+    if (!p) p = subghz_preset_get(s_preset);
+    esp_err_t err = subghz_store_save_key(name, subghz_protocol_name(proto),
+                                          (uint16_t)bits, key, te, freq,
+                                          p ? p->flipper_name : NULL);
     if (err == ESP_ERR_INVALID_STATE) {
         io_log("subghz: ERR no-storage-target (set `subghz storage <littlefs|sd>`)\r\n");
     } else if (err == ESP_ERR_NOT_FOUND) {

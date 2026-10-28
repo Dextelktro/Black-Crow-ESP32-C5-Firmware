@@ -3,7 +3,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* On-board WS2812 RGB LED (ESP32-C5-DevKitC-1: GPIO27).
+/* On-board status LED (pin/type per board_config.h):
+ *   DevKit — addressable WS2812 RGB on GPIO27.
+ *   XIAO   — plain single-colour USER_LED on GPIO27 (LEDC PWM); colours
+ *            collapse to intensity, so effects still convey state.
  *
  * Default "auto" mode reflects device state:
  *   GREEN = idle, BLUE = BLE client connected, RED = attack running.

@@ -1,0 +1,22 @@
+menu "Deauther board selection"
+
+choice BOARD_SELECT
+    prompt "Target board"
+    default BOARD_ESP32C5_DEVKIT
+    help
+        Select the physical board the firmware is built for. The pin map
+        and flash/partition layout follow this choice (see
+        main/board_config.h). The DevKit is the original 16 MB board;
+        the XIAO build is driven by sdkconfig.defaults.xiao, which also
+        switches the flash size to 8 MB and the partition table to
+        partitions.xiao.csv.
+
+    config BOARD_ESP32C5_DEVKIT
+        bool "ESP32-C5-DevKitC-1 (16MB flash / 8MB PSRAM)"
+
+    config BOARD_XIAO_ESP32C5
+        bool "Seeed Studio XIAO ESP32-C5 (8MB flash / 8MB PSRAM)"
+
+endchoice
+
+endmenu

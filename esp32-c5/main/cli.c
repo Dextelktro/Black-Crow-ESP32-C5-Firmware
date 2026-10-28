@@ -129,11 +129,12 @@ static const char *HELP =
     "  subghz analyzer [stop]          sweep bands, report strongest frequency\r\n"
     "  subghz spectrum band <1-6> [bins]   focused waterfall (315/390/415/433/868/915)\r\n"
     "  subghz spectrum [center] [span] [bins] | bands | stop   RSSI waterfall sweep\r\n"
-    "  subghz readraw [strict|rssi <dbm>|stats|stop]   capture raw OOK (strict requires repeated waveform)\r\n"
+    "  subghz readraw [strict|rssi <dbm>|stats|stop]   record raw OOK (default: continuous recorder; strict: one clean waveform)\r\n"
     "  subghz read | stop   decode OOK: Princeton/Linear/CAME/NiceFlo/Holtek/GateTX/Doitrand/Phoenix_V2/Clemsa; 2FSK: Ansonic\r\n"
     "  subghz brute <CAME|NiceFlo|Linear> <bits<=20> [reps] | resume | stop   code-space sweep\r\n"
     "  subghz storage <littlefs|sd|show>   choose where .sub files are saved\r\n"
         "  subghz save <name>              save last read/readraw capture, even while listening\r\n"
+        "  subghz savekey <name> <proto> <bits> <keyhex> <te> <freq> [preset]   save a chosen decoded signal\r\n"
         "  subghz ls | info <name> | rm <name> manage the .sub library (RAW or Key)\r\n"
     "  subghz tx [repeats]             transmit the last capture (OOK)\r\n"
     "  subghz emulate <name> [repeats] replay a saved .sub\r\n"
@@ -1735,6 +1736,20 @@ static void run_line(char *line)
         if (strcasecmp(argv[1], "save") == 0) {
             if (argc < 3) { io_log("usage: subghz save <name>\r\n"); return; }
             subghz_save(argv[2]);
+            return;
+        }
+        if (strcasecmp(argv[1], "savekey") == 0) {
+            /* Save ANY decoded signal the app selected from the Read list. */
+            if (argc < 8) {
+                io_log("usage: subghz savekey <name> <proto> <bits> <keyhex> "
+                       "<te> <freq> [preset]\r\n");
+                return;
+            }
+            uint64_t key = strtoull(argv[5], NULL, 16);
+            subghz_save_key_fields(argv[2], argv[3], atoi(argv[4]), key,
+                                   (uint32_t)strtoul(argv[6], NULL, 10),
+                                   (uint32_t)strtoul(argv[7], NULL, 10),
+                                   (argc >= 9) ? argv[8] : NULL);
             return;
         }
         if (strcasecmp(argv[1], "ls") == 0) {

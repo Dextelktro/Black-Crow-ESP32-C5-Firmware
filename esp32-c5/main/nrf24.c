@@ -1,6 +1,7 @@
 #include "nrf24.h"
 
 #include "esp_log.h"
+#include "board_config.h"
 #include "io.h"
 
 static const char *TAG = "nrf24_mod";
@@ -9,11 +10,11 @@ static bool s_ready = false;
 esp_err_t nrf24_module_init(void)
 {
     nrf24_pins_t pins = {
-        .pin_sck      = 6,
-        .pin_miso     = 2,
-        .pin_mosi     = 7,
-        .pin_csn      = 9,
-        .pin_ce       = 8,
+        .pin_sck      = BOARD_SPI_SCK_GPIO,
+        .pin_miso     = BOARD_SPI_MISO_GPIO,
+        .pin_mosi     = BOARD_SPI_MOSI_GPIO,
+        .pin_csn      = BOARD_NRF24_CSN_GPIO,
+        .pin_ce       = BOARD_NRF24_CE_GPIO,
         .pin_irq      = -1,
         .spi_clock_hz = 4000000,
     };

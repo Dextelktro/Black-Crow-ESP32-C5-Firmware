@@ -6,17 +6,36 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+
+#include "board_config.h"
+#if BOARD_HAS_WS2812
 #include "led_strip.h"
+#else
+#include "driver/ledc.h"
+#endif
 
 #include "attack.h"
 #include "transport_ble.h"
 
-/* ESP32-C5-DevKitC-1: addressable RGB LED driven by GPIO27. */
-#define LED_GPIO   27
+/* Status LED pin (see board_config.h):
+ *   DevKit — addressable WS2812 RGB on GPIO27.
+ *   XIAO   — plain single-colour USER_LED on GPIO27 driven by LEDC PWM
+ *            (RGB requests collapse to a perceived intensity). */
+#define LED_GPIO   BOARD_STATUS_LED_GPIO
 #define TICK_MS    25
 
+#if !BOARD_HAS_WS2812
+#define LED_PWM_MODE     LEDC_LOW_SPEED_MODE
+#define LED_PWM_TIMER    LEDC_TIMER_0
+#define LED_PWM_CHANNEL  LEDC_CHANNEL_0
+#define LED_PWM_RES      LEDC_TIMER_8_BIT
+#define LED_PWM_FREQ_HZ  5000
+#endif
+
 static const char *TAG = "led";
+#if BOARD_HAS_WS2812
 static led_strip_handle_t s_led_strip;
+#endif
 
 /* ---- user-controllable state ---- */
 static volatile bool         s_auto = true;
@@ -29,6 +48,7 @@ static uint8_t scale8(uint8_t v, uint8_t s)
     return (uint8_t)(((uint16_t)v * (uint16_t)s) / 255);
 }
 
+#if BOARD_HAS_WS2812
 static void led_put(uint8_t r, uint8_t g, uint8_t b)
 {
     uint8_t br = s_brightness;
@@ -40,6 +60,26 @@ static void led_put(uint8_t r, uint8_t g, uint8_t b)
         ESP_LOGE(TAG, "LED update failed: %s", esp_err_to_name(err));
     }
 }
+#else
+/* Single-colour LED: collapse the RGB request to a perceived intensity
+ * (brightest channel) and drive it as an 8-bit LEDC duty. The auto/manual
+ * render logic above is shared, so blink/breathe/strobe still work. */
+static void led_put(uint8_t r, uint8_t g, uint8_t b)
+{
+    uint8_t v = r;
+    if (g > v) v = g;
+    if (b > v) v = b;
+    uint32_t duty = scale8(v, s_brightness);
+#if BOARD_STATUS_LED_ACTIVE_LOW
+    duty = 255u - duty;
+#endif
+    esp_err_t err = ledc_set_duty(LED_PWM_MODE, LED_PWM_CHANNEL, duty);
+    if (err == ESP_OK) err = ledc_update_duty(LED_PWM_MODE, LED_PWM_CHANNEL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LED update failed: %s", esp_err_to_name(err));
+    }
+}
+#endif
 
 /* Integer HSV->RGB, all args/results 0-255. */
 static void hsv_to_rgb(uint8_t h, uint8_t s, uint8_t v,
@@ -76,7 +116,13 @@ static void render_auto(uint32_t t)
         /* fast red blink */
         if ((t / 120) % 2 == 0) r = 255;
     } else if (transport_ble_connected_count() > 0) {
+#if BOARD_HAS_WS2812
         b = triangle(t, 2600); /* gentle blue breathe */
+#else
+        /* Monochrome LED cannot show colour, so "linked" breathes faster than
+         * idle to stay distinguishable from it (idle keeps the 2600 ms period). */
+        b = triangle(t, 1100);
+#endif
     } else {
         g = triangle(t, 2600); /* gentle green breathe */
     }
@@ -130,6 +176,7 @@ static void led_task(void *arg)
 
 void led_init(void)
 {
+#if BOARD_HAS_WS2812
     const led_strip_config_t strip_config = {
         .strip_gpio_num = LED_GPIO,
         .max_leds = 1,
@@ -150,6 +197,26 @@ void led_init(void)
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config,
                                              &s_led_strip));
     ESP_ERROR_CHECK(led_strip_clear(s_led_strip));
+#else
+    const ledc_timer_config_t timer_cfg = {
+        .speed_mode      = LED_PWM_MODE,
+        .timer_num       = LED_PWM_TIMER,
+        .duty_resolution = LED_PWM_RES,
+        .freq_hz         = LED_PWM_FREQ_HZ,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&timer_cfg));
+    const ledc_channel_config_t channel_cfg = {
+        .gpio_num   = LED_GPIO,
+        .speed_mode = LED_PWM_MODE,
+        .channel    = LED_PWM_CHANNEL,
+        .timer_sel  = LED_PWM_TIMER,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .duty       = BOARD_STATUS_LED_ACTIVE_LOW ? 255 : 0,  /* start off */
+        .hpoint     = 0,
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&channel_cfg));
+#endif
 
     if (xTaskCreate(led_task, "led", 2560, NULL, 1, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to create LED task");
