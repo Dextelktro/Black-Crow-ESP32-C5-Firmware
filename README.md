@@ -17,8 +17,7 @@
 >
 > **(ID)** Flash firmware langsung dari browser (Chrome/Edge), tanpa toolchain.
 > Pilih board, pilih port USB, lalu **Erase** / **Start Flash** dan buka **serial
-> monitor** bawaan. *Aktifkan GitHub Pages: Settings → Pages → Deploy from a
-> branch → `main` → `/docs` agar tautan di atas aktif.*
+> monitor** bawaan.
 
 # ESP32-C5 Multi-Radio Lab Toolkit
 
