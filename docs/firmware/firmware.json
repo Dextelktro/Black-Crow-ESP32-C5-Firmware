@@ -12,7 +12,7 @@
       "flashSize": "16MB",
       "flashMode": "dio",
       "flashFreq": "80m",
-      "source": "release BCfw-v0.1.0",
+      "source": "local build",
       "note": "This board is normally flashed over its USB-Serial-JTAG port. If it is not detected, hold BOOT, tap RESET, release BOOT, then try again.",
       "parts": [
         { "name": "Bootloader",      "offset": 8192,  "path": "firmware/devkit/bootloader.bin" },
