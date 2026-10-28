@@ -190,6 +190,51 @@
           <pre class="console monitor" id="monitorConsole"></pre>
         </section>
 
+        <!-- App download CTA (post-flash) -->
+        <section class="app-cta" id="appCta">
+          <div class="app-inner">
+            <div class="ok-chip">✓ Firmware installed — now get the Android app</div>
+            <h3>Download the Black Crow app</h3>
+            <p>
+              Drive your freshly flashed board from your phone over Bluetooth. Grab the
+              latest Android app <b id="appVersion" style="color: var(--lime)"></b> and install it.
+            </p>
+            <div class="app-actions">
+              <a class="btn primary" id="btnAppDownload" href="#" download="black-crow-app.apk" rel="noopener">
+                ⬇ Download the app<span id="appSize"></span>
+              </a>
+            </div>
+            <div class="install-help">
+              <div class="ih-note">
+                ⚠ Android blocks apps that don't come from the Play Store. To install this one you
+                must <b>allow installs from an unknown source</b> and get past the Play Protect warning.
+              </div>
+              <div class="ih-cols">
+                <div class="ih-col">
+                  <div class="ih-head">EN · Install on Android</div>
+                  <ol>
+                    <li>Tap <b>Download the app</b> and wait for the <b>.apk</b> to finish downloading.</li>
+                    <li>Open the downloaded file. Android will say the source isn't allowed — tap <b>Settings</b>.</li>
+                    <li>Turn on <b>Allow from this source</b> (Settings → Apps → Special app access → Install unknown apps), then go back and install.</li>
+                    <li>If <b>Play Protect</b> warns the app is unsafe, choose <b>More details → Install anyway</b> — the app is just unsigned, not malicious.</li>
+                    <li>Open the app and grant <b>Bluetooth</b> and <b>Location</b> permissions so it can reach the board.</li>
+                  </ol>
+                </div>
+                <div class="ih-col">
+                  <div class="ih-head">ID · Pasang di Android</div>
+                  <ol>
+                    <li>Ketuk <b>Download the app</b> dan tunggu berkas <b>.apk</b> selesai diunduh.</li>
+                    <li>Buka berkas hasil unduhan. Android akan bilang sumbernya tidak diizinkan — ketuk <b>Setelan</b>.</li>
+                    <li>Aktifkan <b>Izinkan dari sumber ini</b> (Setelan → Aplikasi → Akses aplikasi khusus → Instal aplikasi tak dikenal), lalu kembali dan pasang.</li>
+                    <li>Jika <b>Play Protect</b> memperingatkan aplikasi tidak aman, pilih <b>Detail selengkapnya → Tetap instal</b> — aplikasi ini hanya tak bertanda tangan, bukan berbahaya.</li>
+                    <li>Buka aplikasi dan beri izin <b>Bluetooth</b> serta <b>Lokasi</b> agar bisa terhubung ke board.</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Discord CTA -->
         <section class="discord-cta" id="discordCta">
           <div class="discord-inner">

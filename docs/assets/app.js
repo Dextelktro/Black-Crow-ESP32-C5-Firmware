@@ -141,6 +141,23 @@ function portLabel(port) {
   return "Serial port";
 }
 
+/** Point the post-flash "Download the app" button at the manifest's APK.
+ *  Mirrors fetchBytes' guard: only a plain same-origin relative path is
+ *  accepted, so a bad manifest can't turn the button into an off-origin link. */
+function wireAppDownload(app) {
+  const btn = $("btnAppDownload");
+  if (!btn || !app || typeof app.file !== "string") return;
+  const file = app.file;
+  if (!/^[A-Za-z0-9._\-/]+$/.test(file) || file.startsWith("/") || file.includes("//") || file.includes("..")) return;
+  btn.setAttribute("href", file);
+  const base = file.split("/").pop();
+  if (base) btn.setAttribute("download", base);
+  if (app.version) $("appVersion").textContent = app.version;
+  if (typeof app.size === "number" && app.size > 0) {
+    $("appSize").textContent = ` · ${(app.size / 1048576).toFixed(1)} MB`;
+  }
+}
+
 /* --------------------------- actions ------------------------------ */
 function selectBoard(id) {
   const board = state.manifest.boards[id];
@@ -250,8 +267,10 @@ async function startFlash() {
     state.port = null;
     toast("ok", "Flash complete", "Firmware installed. The device is rebooting.");
     logTerm.writeLine("✓ Flash complete — device reset into the new firmware.");
+    const appReady = $("btnAppDownload").getAttribute("href") !== "#";
+    if (appReady) $("appCta").classList.add("show");
     $("discordCta").classList.add("show");
-    $("discordCta").scrollIntoView({ behavior: "smooth", block: "center" });
+    (appReady ? $("appCta") : $("discordCta")).scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
     setFlashStage("idle", "Flash failed — see the log below");
     toast("err", "Flash failed", err.message);
@@ -296,7 +315,7 @@ async function toggleMonitor() {
   $("monitorCard").classList.remove("hidden");
   $("chipInfo").classList.remove("show");
   const baud = parseInt($("monBaud").value, 10);
-  monTerm.writeLine(`── monitor started @ ${baud} baud ──`);
+  monTerm.writeLine(`── monitor @ ${baud} baud · resetting device to stream logs ──`);
   try {
     await monitor.start(state.port, baud);
     state.mode = "monitoring";
@@ -348,6 +367,7 @@ async function init() {
     const res = await fetch("firmware/firmware.json", { cache: "no-cache" });
     state.manifest = await res.json();
     $("fwVersion").textContent = state.manifest.firmwareVersion || "";
+    wireAppDownload(state.manifest.app);
     logTerm.writeLine(`Black Crow Web Flasher ready. Firmware: ${state.manifest.firmwareVersion}.`);
   } catch (err) {
     toast("err", "Manifest error", "Could not load firmware/firmware.json.");

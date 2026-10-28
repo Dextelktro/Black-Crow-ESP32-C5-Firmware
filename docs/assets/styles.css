@@ -7,7 +7,7 @@
    ============================================================ */
 :root {
   /* Depth */
-  --bg: #06070a;
+  --bg: #000000;
   --bg-1: #080a0e;
   --bg-2: #0b0e13; /* cards / consoles */
   --bg-3: #10141b; /* raised surfaces */
@@ -70,7 +70,8 @@ a { color: var(--lime); }
 /* ============================================================
    Animated background: aurora mesh + drifting grid + scanline
    ============================================================ */
-.bg-fx { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+/* Plain black background: the grid + aurora wash is disabled. */
+.bg-fx { display: none; }
 
 /* drifting tech grid, masked to the top */
 .bg-fx::before {
@@ -121,8 +122,10 @@ a { color: var(--lime); }
    ============================================================ */
 header.hero { text-align: center; padding: 56px 0 10px; position: relative; }
 .hero img.logo {
+  display: block;
   width: min(540px, 90%);
   height: auto;
+  margin-inline: auto;
   filter: drop-shadow(0 0 48px rgba(158, 240, 26, 0.16));
   animation: floaty 7s ease-in-out infinite;
 }
@@ -547,6 +550,51 @@ pre.console.monitor { color: #bfe3ff; height: 260px; }
 .btn.discord:hover:not(:disabled) { background: var(--discord-2); box-shadow: 0 16px 44px -14px rgba(88, 101, 242, 0.6); }
 
 /* ============================================================
+   App download CTA (post-flash)
+   ============================================================ */
+.app-cta { margin-top: 28px; display: none; }
+.app-cta.show { display: block; animation: fadeUp 0.5s var(--ease); }
+.app-inner {
+  position: relative; overflow: hidden;
+  border: 1px solid var(--brd-hover); border-radius: var(--radius);
+  background: linear-gradient(135deg, rgba(158, 240, 26, 0.12), rgba(25, 227, 208, 0.04));
+  padding: 30px 26px; text-align: center;
+}
+.app-inner::before {
+  content: ""; position: absolute; top: -50%; left: -10%; width: 340px; height: 340px;
+  background: radial-gradient(circle, var(--lime-glow), transparent 60%); filter: blur(12px);
+  animation: aurora 12s ease-in-out infinite;
+}
+.app-inner > * { position: relative; }
+.app-inner .ok-chip {
+  display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 13px;
+  color: var(--lime); border: 1px solid var(--brd-hover); border-radius: 999px; padding: 5px 14px; margin-bottom: 16px;
+  background: rgba(158, 240, 26, 0.05);
+}
+.app-inner h3 { font-family: var(--display); font-weight: 700; font-size: 25px; margin: 4px 0 8px; }
+.app-inner p { color: var(--muted); margin: 0 auto 20px; max-width: 480px; }
+.app-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 22px; }
+#appSize { color: rgba(0, 0, 0, 0.55); font-weight: 600; margin-left: 2px; }
+
+.install-help { text-align: left; margin-top: 6px; }
+.ih-note {
+  color: var(--amber); font-size: 13.5px; line-height: 1.55; border: 1px solid rgba(255, 194, 75, 0.35);
+  background: rgba(255, 194, 75, 0.06); border-radius: var(--radius-sm); padding: 12px 15px; margin-bottom: 18px;
+}
+.ih-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.ih-col {
+  border: 1px solid var(--brd); border-radius: var(--radius-sm); background: var(--panel); padding: 16px 18px;
+}
+.ih-head {
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--cyan); margin-bottom: 10px;
+}
+.install-help ol { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.install-help li { margin-bottom: 8px; }
+.install-help li:last-child { margin-bottom: 0; }
+.install-help b { color: var(--text); font-weight: 600; }
+
+/* ============================================================
    Unsupported screen
    ============================================================ */
 .unsupported { display: none; text-align: center; padding: 80px 16px; }
@@ -577,6 +625,7 @@ footer .links { display: flex; gap: 20px; justify-content: center; flex-wrap: wr
    ============================================================ */
 @media (max-width: 640px) {
   .boards { grid-template-columns: 1fr; }
+  .ih-cols { grid-template-columns: 1fr; }
   .hero { padding-top: 36px; }
   .step-head .sub { display: none; }
   pre.console { height: 240px; }
