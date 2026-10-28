@@ -1,3 +1,12 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Black Crow Official Community Dxt and contributors
+ * SPDX-FileCopyrightText: Flipper Devices Inc. and the flipperzero-firmware contributors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Contains material derived from the GPL-3.0 Flipper Zero firmware; see NOTICE.
+ */
+
 #include "ir_db.h"
 
 #include <string.h>

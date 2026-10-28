@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Black Crow Official Community Dxt and contributors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
 #include "nvs_flash.h"
 #include "esp_err.h"
 #include "io.h"
