@@ -107,11 +107,13 @@ class SubghzDecoded {
     required this.freqHz,
     required this.rssi,
     required this.at,
+    this.keyRawHex = '',
   });
 
   final String proto; // "unknown" if not decoded
   final int bits;
   final String keyHex; // grouped hex of the meaningful bits, e.g. "AB CD EF"
+  final String keyRawHex; // raw ungrouped hex from telemetry (for save), e.g. "ABCDEF"
   final int te; // base Te in us (0 if n/a)
   final int freqHz;
   final int rssi;

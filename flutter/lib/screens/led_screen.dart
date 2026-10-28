@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
+import '../services/settings.dart';
 
 const _kAccent = Color(0xFFFFB000);
 
@@ -18,6 +19,9 @@ class _LedScreenState extends State<LedScreen> {
   String _effect = 'solid';
   double _r = 0, _g = 255, _b = 128;
   double _brightness = 64;
+  // Set from Settings at the top of build(); true for the XIAO's single-colour
+  // USER_LED (intensity only), false for the DevKit's addressable WS2812.
+  bool _monochrome = false;
 
   static const _effects = [
     ('auto', Icons.auto_mode),
@@ -42,11 +46,16 @@ class _LedScreenState extends State<LedScreen> {
 
   void _apply() {
     final ctrl = context.read<DeviceController>();
+    final monochrome = context.read<Settings>().board.ledIsMonochrome;
     Future<void> f;
     if (_effect == 'auto') {
       f = ctrl.ledAuto();
     } else if (_effect == 'off') {
       f = ctrl.ledEffect('off', 0, 0, 0);
+    } else if (monochrome) {
+      // Single-colour LED: drive all channels at full so the brightness
+      // slider controls intensity (firmware collapses RGB -> max channel).
+      f = ctrl.ledEffect(_effect, 255, 255, 255);
     } else {
       f = ctrl.ledEffect(_effect, _r.round(), _g.round(), _b.round());
     }
@@ -81,6 +90,10 @@ class _LedScreenState extends State<LedScreen> {
   Color get _previewColor {
     final scale = _brightness / 255.0;
     if (_effect == 'off') return Colors.black;
+    if (_monochrome) {
+      // Amber USER_LED scaled by brightness.
+      return Color.fromARGB(255, (0xFF * scale).round(), (0xB0 * scale).round(), 0);
+    }
     if (_effect == 'rainbow') return _kAccent;
     return Color.fromARGB(
       255,
@@ -92,6 +105,7 @@ class _LedScreenState extends State<LedScreen> {
 
   @override
   Widget build(BuildContext context) {
+    _monochrome = context.watch<Settings>().board.ledIsMonochrome;
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A02),
       appBar: AppBar(
@@ -117,14 +131,14 @@ class _LedScreenState extends State<LedScreen> {
               height: 120,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: _effect == 'rainbow'
+                gradient: (_effect == 'rainbow' && !_monochrome)
                     ? const SweepGradient(colors: [
                         Color(0xFFFF0000), Color(0xFFFFFF00), Color(0xFF00FF00),
                         Color(0xFF00FFFF), Color(0xFF0000FF), Color(0xFFFF00FF),
                         Color(0xFFFF0000),
                       ])
                     : null,
-                color: _effect == 'rainbow' ? null : _previewColor,
+                color: (_effect == 'rainbow' && !_monochrome) ? null : _previewColor,
                 boxShadow: [
                   BoxShadow(
                     color: _previewColor.withValues(alpha: 0.6),
@@ -170,7 +184,7 @@ class _LedScreenState extends State<LedScreen> {
           ),
           const SizedBox(height: 20),
 
-          if (_usesColor) ...[
+          if (_usesColor && !_monochrome) ...[
             _label('COLOR'),
             const SizedBox(height: 8),
             Wrap(
@@ -232,15 +246,20 @@ class _LedScreenState extends State<LedScreen> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.white12),
             ),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(Icons.memory, color: Colors.white38, size: 16),
-                SizedBox(width: 8),
+                const Icon(Icons.memory, color: Colors.white38, size: 16),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'On-board WS2812 RGB LED · GPIO27 (ESP32-C5-DevKitC-1). '
-                    '"Auto" shows device status (green idle / blue linked / red attack).',
-                    style: TextStyle(color: Colors.white38, fontSize: 11),
+                    _monochrome
+                        ? 'Single-colour USER_LED · GPIO27 (XIAO ESP32-C5), driven '
+                              'by PWM (intensity only, colour is ignored). "Auto" '
+                              'shows status by pulse: idle slow-breathes, linked '
+                              'fast-breathes, attack blinks.'
+                        : 'On-board WS2812 RGB LED · GPIO27 (ESP32-C5-DevKitC-1). '
+                              '"Auto" shows device status (green idle / blue linked / red attack).',
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
                   ),
                 ),
               ],

@@ -6,7 +6,9 @@ import 'package:provider/provider.dart';
 
 import '../models/ble_spam_type.dart';
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
 import '../widgets/device_issue_banner.dart';
+import '../widgets/glass_surface.dart';
 
 class BleSpamTypeScreen extends StatefulWidget {
   const BleSpamTypeScreen({
@@ -87,9 +89,7 @@ class _BleSpamTypeScreenState extends State<BleSpamTypeScreen> {
         : Duration.zero;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF010D01),
       appBar: AppBar(
-        backgroundColor: Colors.black,
         title: Text(
           '${t.label.toUpperCase()} SPAM',
           style: TextStyle(
@@ -139,9 +139,9 @@ class _BleSpamTypeScreenState extends State<BleSpamTypeScreen> {
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.black,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: t.accent.withValues(alpha: 0.3)),
+              color: Colors.black.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.border.withValues(alpha: 0.9)),
             ),
             child: Text(
               _hexPreview(t),
@@ -283,15 +283,20 @@ class _BleSpamTypeScreenState extends State<BleSpamTypeScreen> {
   }
 
   String _hexPreview(BleSpamType t) {
-    final Map<String, String> samples = {
-      'apple': '1e ff 4c 00 07 19 07 02 20 75 aa 30 01 00 00 45',
-      'sour': '10 ff 4c 00 01 00 00 00 00 00 00 00 00 00 00 00',
-      'samsung': '42 09 81 02 14 15 03 21 01 09 ab 0c 01 46 06 3c',
-      'google': '03 03 2c fe 06 16 2c fe 00 00 02 0a 00 00',
-      'windows': '0a ff 06 00 01 00 00 00 00 00 00 00 00',
-      'xiaomi': '15 16 95 fe 70 20 5b 04 fc 00 00 00 00 00 00',
-      'android': '42 09 81 02 ... (sam) / 03 03 2c fe ... (goo)',
-      'all': '(rotating all types)',
+    // Representative first frame per type; '..' = random byte, '...' = random
+    // tail. Models/names rotate sequentially as spam runs.
+    const Map<String, String> samples = {
+      'apple': '1e ff 4c 00 07 19 07 0e 20 55 .. .. .. 00 00 ...  (AirPods Pro)',
+      'sour': '0a ff 4c 00 0f 05 c0 13 .. .. ..  (Nearby Action)',
+      'samsung':
+          'buds:  1b ff 75 00 42 09 81 02 14 15 03 21 01 09 ee 7a 01 0c ... 10 ff 75\n'
+          'watch: 0e ff 75 00 01 00 02 00 01 01 ff 00 00 43 1a',
+      'google': '03 03 2c fe 06 16 2c fe 72 ef 8d 02 0a ..  (FastPair)',
+      'windows': "16 ff 06 00 03 00 80 'Windows Protocol'",
+      'xiaomi':
+          '1b ff 8f 03 16 01 20 01 aa 17 0a 00 00 00 00 88 50 11 b1 ff .. .. 00 00 00 00 00 00',
+      'android': 'rotating: samsung + google fastpair',
+      'all': 'rotating all 6 types (sequential models)',
     };
     return samples[t.id] ?? '--';
   }
@@ -328,13 +333,9 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return GlassCard(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.4),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: accent.withValues(alpha: 0.3)),
-      ),
+      radius: 12,
       child: Column(
         children: [
           Text(
@@ -349,8 +350,8 @@ class _StatCard extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             label,
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.5),
+            style: const TextStyle(
+              color: AppColors.textDim,
               fontSize: 9,
               fontFamily: 'monospace',
               letterSpacing: 1,

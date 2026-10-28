@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../services/api_server.dart';
 import '../services/settings.dart';
+import '../widgets/board_selector.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -72,6 +73,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // ── Device board ───────────────────────────────────────────
+          const Text(
+            'Device board',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          const SizedBox(height: 8),
+          const BoardSelector(),
+          const SizedBox(height: 6),
+          const Text(
+            'The firmware does not report its board, so set this to match your '
+            'hardware. It drives the Hardware Peripheral pin map and the LED '
+            'controls. The XIAO ESP32-C5 has a single-colour PWM LED (not RGB) '
+            'and cannot run the UART ESP-flasher — every pad is already used, so '
+            'no pin is free for it.',
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 8),
+
           // ── API server ─────────────────────────────────────────────
           const Text(
             'HTTP API',

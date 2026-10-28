@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/ir_models.dart';
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
 import '../widgets/glass_surface.dart';
 import 'ir_hub_screen.dart';
 import 'ir_universal_remote_screen.dart';
@@ -16,23 +17,28 @@ class IrUniversalScreen extends StatelessWidget {
     final ctrl = context.watch<DeviceController>();
     return Scaffold(
       appBar: AppBar(title: const Text('Infrared Universal')),
-      body: GridView.count(
-        padding: const EdgeInsets.all(16),
-        crossAxisCount: 2,
-        crossAxisSpacing: 14,
-        mainAxisSpacing: 14,
-        childAspectRatio: 0.98,
-        children: [
-          for (final cat in kIrCategories)
-            _CategoryCard(
-              category: cat,
-              onTap: () => pushIr(
-                context,
-                ctrl,
-                IrUniversalRemoteScreen(category: cat),
-              ),
+      body: GridView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        // Responsive columns that stay proportional across screen widths, with
+        // a fixed row height tuned to the content (no stretched empty space).
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 210,
+          mainAxisSpacing: 14,
+          crossAxisSpacing: 14,
+          mainAxisExtent: 126,
+        ),
+        itemCount: kIrCategories.length,
+        itemBuilder: (_, i) {
+          final cat = kIrCategories[i];
+          return _CategoryCard(
+            category: cat,
+            onTap: () => pushIr(
+              context,
+              ctrl,
+              IrUniversalRemoteScreen(category: cat),
             ),
-        ],
+          );
+        },
       ),
     );
   }
@@ -46,77 +52,65 @@ class _CategoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = category.color;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: 0.055),
-                Colors.white.withValues(alpha: 0.015),
-              ],
-            ),
-            border: Border.all(color: glassNeutralBorder),
-          ),
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    final subtitle = category.builtIn
+        ? '${category.buttons.length} commands'
+        : 'Capture & emulate';
+    return GlassCard(
+      onTap: onTap,
+      padding: const EdgeInsets.all(14),
+      radius: 18,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Container(
-                    width: 46,
-                    height: 46,
-                    decoration: BoxDecoration(
-                      color: color.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(13),
-                    ),
-                    child: Icon(category.icon, color: color, size: 26),
-                  ),
-                  const Spacer(),
-                  if (!category.builtIn)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 7, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(20),
-                        border:
-                            Border.all(color: color.withValues(alpha: 0.4)),
-                      ),
-                      child: Text('CAPTURE',
-                          style: TextStyle(
-                              color: color,
-                              fontSize: 8,
-                              letterSpacing: 1,
-                              fontWeight: FontWeight.bold)),
-                    ),
-                ],
+              // Category hue survives only as a small icon tint.
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(category.icon, color: color, size: 24),
               ),
               const Spacer(),
-              Text(
-                category.label.replaceFirst('Universal ', ''),
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 17,
-                    fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                category.builtIn
-                    ? '${category.buttons.length} buttons · built-in'
-                    : 'Capture & emulate',
-                style: const TextStyle(color: Colors.white54, fontSize: 11),
-              ),
+              if (!category.builtIn)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(AppRadius.chip),
+                    border: Border.all(color: color.withValues(alpha: 0.4)),
+                  ),
+                  child: Text(
+                    'CAPTURE',
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 8,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
             ],
           ),
-        ),
+          const SizedBox(height: 12),
+          Text(
+            category.label.replaceFirst('Universal ', ''),
+            style: const TextStyle(
+              color: AppColors.text,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            style: const TextStyle(color: AppColors.textDim, fontSize: 11),
+          ),
+        ],
       ),
     );
   }

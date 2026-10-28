@@ -77,9 +77,11 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
                   onChanged: running
                       ? null
                       : (value) => setState(() => _strictMode = value),
-                  title: const Text('Strict RAW filtering'),
-                  subtitle: const Text(
-                    'Show the first complete waveform immediately; ignore truncated captures and suppress repeats.',
+                  title: const Text('Single-signal (strict) mode'),
+                  subtitle: Text(
+                    _strictMode
+                        ? 'Capture ONE clean waveform and suppress repeats. Save/Transmit use that single signal.'
+                        : 'Continuous recorder: every detected signal is appended into ONE recording. Save/Transmit cover the whole session (like Flipper Read RAW).',
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -96,7 +98,7 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
                   children: [
                     Expanded(
                       child: SgButton(
-                        label: 'TRANSMIT LAST',
+                        label: _strictMode ? 'TRANSMIT' : 'TRANSMIT ALL',
                         icon: Icons.wifi_tethering,
                         filled: false,
                         busy: txBusy,
@@ -108,7 +110,7 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: SgButton(
-                        label: 'SAVE LAST',
+                        label: _strictMode ? 'SAVE' : 'SAVE ALL',
                         icon: Icons.save_alt,
                         filled: false,
                         onPressed: hasCapture && !txBusy
@@ -121,7 +123,19 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
                 const SizedBox(height: 18),
                 Row(
                   children: [
-                    const SgSectionLabel('CAPTURED BURSTS'),
+                    SgSectionLabel(
+                      _strictMode ? 'CAPTURED SIGNAL' : 'RECORDED SIGNALS',
+                    ),
+                    if (!_strictMode && bursts.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        '${bursts.length} in recording',
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                     const Spacer(),
                     if (running)
                       const Text(

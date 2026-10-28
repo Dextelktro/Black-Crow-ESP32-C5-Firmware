@@ -5,7 +5,9 @@ import 'package:provider/provider.dart';
 
 import '../models/ble_spam_type.dart';
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
 import '../widgets/device_issue_banner.dart';
+import '../widgets/glass_surface.dart';
 import 'ble_spam_type_screen.dart';
 
 class BleSpamScreen extends StatelessWidget {
@@ -29,30 +31,31 @@ class BleSpamBody extends StatelessWidget {
     final ctrl = context.watch<DeviceController>();
     final active = ctrl.bleSpamRunning;
 
-    return Container(
-      color: const Color(0xFF010D01),
-      child: Column(
-        children: [
-          DeviceIssueBanner(controller: ctrl),
-          if (active) _ActiveBanner(ctrl: ctrl),
-          Expanded(
-            child: GridView.builder(
-              padding: const EdgeInsets.all(12),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: 1.05,
-              ),
-              itemCount: BleSpamType.values.length,
-              itemBuilder: (_, i) => _TypeCard(
-                type: BleSpamType.values[i],
-                disabled: active && ctrl.bleSpamType != BleSpamType.values[i],
-              ),
+    return Column(
+      children: [
+        DeviceIssueBanner(controller: ctrl),
+        if (active) _ActiveBanner(ctrl: ctrl),
+        Expanded(
+          child: GridView.builder(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 20),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 200,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              mainAxisExtent: 142,
             ),
+            itemCount: BleSpamType.values.length,
+            itemBuilder: (_, i) {
+              final type = BleSpamType.values[i];
+              return _TypeCard(
+                type: type,
+                disabled: active && ctrl.bleSpamType != type,
+                selected: active && ctrl.bleSpamType == type,
+              );
+            },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -121,82 +124,71 @@ class _ActiveBanner extends StatelessWidget {
 }
 
 class _TypeCard extends StatelessWidget {
-  const _TypeCard({required this.type, required this.disabled});
+  const _TypeCard({
+    required this.type,
+    required this.disabled,
+    this.selected = false,
+  });
   final BleSpamType type;
   final bool disabled;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: disabled ? null : () => _onTap(context),
-        child: Opacity(
-          opacity: disabled ? 0.4 : 1.0,
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.4),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: type.accent.withValues(alpha: 0.35),
-                width: 1.2,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: type.accent.withValues(alpha: 0.08),
-                  blurRadius: 12,
+    return GlassCard(
+      onTap: disabled ? null : () => _onTap(context),
+      disabled: disabled,
+      padding: const EdgeInsets.all(13),
+      radius: 14,
+      accent: type.accent,
+      active: selected,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(type.icon, color: type.accent, size: 22),
+              const Spacer(),
+              if (type.warnText != null)
+                const Icon(
+                  Icons.info_outline,
+                  color: AppColors.warning,
+                  size: 14,
                 ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(type.icon, color: type.accent, size: 22),
-                    const Spacer(),
-                    if (type.warnText != null)
-                      Icon(
-                        Icons.info_outline,
-                        color: type.accent,
-                        size: 14,
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  type.label,
-                  style: TextStyle(
-                    color: type.accent,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  type.subtitle,
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.5),
-                    fontSize: 10,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                const Spacer(),
-                Text(
-                  '${type.defaultDelay}ms default',
-                  style: TextStyle(
-                    color: type.accent.withValues(alpha: 0.6),
-                    fontSize: 9,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            type.label,
+            style: TextStyle(
+              color: type.accent,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+              fontFamily: 'monospace',
             ),
           ),
-        ),
+          const SizedBox(height: 3),
+          Expanded(
+            child: Text(
+              type.subtitle,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: AppColors.textDim,
+                fontSize: 10,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+          Text(
+            '${type.defaultDelay}ms default',
+            style: const TextStyle(
+              color: AppColors.textFaint,
+              fontSize: 9,
+              fontFamily: 'monospace',
+            ),
+          ),
+        ],
       ),
     );
   }

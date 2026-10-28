@@ -45,15 +45,6 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
     final ctrl = context.watch<DeviceController>();
     final running = ctrl.subghzReadRunning;
     final decoded = ctrl.subghzDecoded;
-    // Firmware persists the newest known decode; unknown entries can appear
-    // above it in the UI, so use the first known entry for the save action.
-    SubghzDecoded? lastKnown;
-    for (final d in decoded) {
-      if (d.isKnown) {
-        lastKnown = d;
-        break;
-      }
-    }
 
     return Scaffold(
       appBar: AppBar(
@@ -83,15 +74,6 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
                   busy: false,
                   onPressed: () =>
                       running ? ctrl.subghzStop() : ctrl.subghzReadStart(),
-                ),
-                const SizedBox(height: 10),
-                SgButton(
-                  label: lastKnown == null
-                      ? 'SAVE LAST DECODE'
-                      : 'SAVE: ${lastKnown.proto} ${lastKnown.keyHex}',
-                  icon: Icons.save_alt,
-                  filled: false,
-                  onPressed: lastKnown == null ? null : () => _saveLast(ctrl),
                 ),
                 const SizedBox(height: 18),
                 Row(
@@ -127,7 +109,11 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
                 if (decoded.isEmpty)
                   _Empty(running: running)
                 else
-                  for (final d in decoded) _DecodedCard(d: d),
+                  for (final d in decoded)
+                    _DecodedCard(
+                      d: d,
+                      onSave: d.isKnown ? () => _saveDecoded(ctrl, d) : null,
+                    ),
               ],
             ),
           ),
@@ -136,10 +122,10 @@ class _SubghzReadScreenState extends State<SubghzReadScreen> {
     );
   }
 
-  Future<void> _saveLast(DeviceController ctrl) async {
+  Future<void> _saveDecoded(DeviceController ctrl, SubghzDecoded d) async {
     final name = await promptSubghzName(context, ctrl);
     if (name == null) return;
-    await ctrl.subghzSave(name);
+    await ctrl.subghzSaveDecoded(name, d);
   }
 }
 
@@ -174,8 +160,9 @@ class _Empty extends StatelessWidget {
 }
 
 class _DecodedCard extends StatelessWidget {
-  const _DecodedCard({required this.d});
+  const _DecodedCard({required this.d, this.onSave});
   final SubghzDecoded d;
+  final VoidCallback? onSave;
 
   @override
   Widget build(BuildContext context) {
@@ -220,6 +207,15 @@ class _DecodedCard extends StatelessWidget {
                 timeAgo(d.at),
                 style: const TextStyle(color: Colors.white38, fontSize: 11),
               ),
+              if (onSave != null)
+                IconButton(
+                  tooltip: 'Save this signal',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  icon: const Icon(Icons.save_alt, color: kSgAmber, size: 18),
+                  onPressed: onSave,
+                ),
             ],
           ),
           if (known && d.keyHex.isNotEmpty) ...[

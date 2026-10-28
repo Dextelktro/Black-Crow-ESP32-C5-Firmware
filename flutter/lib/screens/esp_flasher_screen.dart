@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
+import '../services/settings.dart';
 
 const _accent = Color(0xFF2EE6C5);
 const _platform = MethodChannel('deauther/platform');
@@ -932,6 +933,7 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
   Widget build(BuildContext context) {
     final controller = context.watch<DeviceController>();
     _controller = controller;
+    final isXiao = context.watch<Settings>().board == BoardVariant.xiao;
     final flashLogs = controller.rawLog
         .split(RegExp(r'[\r\n]+'))
         .where((line) => line.startsWith('espflash:'))
@@ -961,6 +963,7 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
       body: ListView(
         padding: const EdgeInsets.all(14),
         children: [
+          if (isXiao) _UnsupportedBoardNotice(board: BoardVariant.xiao),
           Container(
             margin: const EdgeInsets.only(bottom: 12),
             decoration: BoxDecoration(
@@ -1248,5 +1251,60 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
   void dispose() {
     _controller?.espFlashClearSessionState();
     super.dispose();
+  }
+}
+
+/// Shown at the top of the flasher screen when the selected board cannot run
+/// the UART ESP-flasher. On the XIAO ESP32-C5 every pad is already assigned, so
+/// there is no free UART1/BOOT pin and the firmware returns "not supported".
+class _UnsupportedBoardNotice extends StatelessWidget {
+  const _UnsupportedBoardNotice({required this.board});
+
+  final BoardVariant board;
+
+  @override
+  Widget build(BuildContext context) {
+    const amber = Color(0xFFFFB000);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: amber.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: amber.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: amber),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Not supported on ${board.label}',
+                  style: const TextStyle(
+                    color: amber,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'The UART ESP-flasher needs a dedicated UART1 (TX/RX) plus a '
+                  'BOOT pin. On the XIAO ESP32-C5 all 11 pads (D0–D10) are already '
+                  'used by the SPI radios, IR and microSD, so no pin is free for '
+                  'it — the firmware reports "not supported" and the actions below '
+                  'will fail. Use the ESP32-C5-DevKitC-1 for this feature, or '
+                  'change the board in Settings.',
+                  style: TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../services/settings.dart';
+import '../widgets/board_selector.dart';
 import '../widgets/glass_surface.dart';
 
 const _kCanvas = Color(0xFF07110F);
@@ -14,6 +17,8 @@ class HardwarePeripheralScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final board = context.watch<Settings>().board;
+    final spec = board == BoardVariant.xiao ? _xiaoSpec : _devkitSpec;
     return Scaffold(
       backgroundColor: _kCanvas,
       appBar: AppBar(
@@ -32,9 +37,9 @@ class HardwarePeripheralScreen extends StatelessWidget {
               borderRadius: BorderRadius.circular(7),
               border: Border.all(color: _kMint.withValues(alpha: 0.30)),
             ),
-            child: const Text(
-              'N16R8',
-              style: TextStyle(
+            child: Text(
+              spec.badge,
+              style: const TextStyle(
                 color: _kMint,
                 fontFamily: 'monospace',
                 fontSize: 10,
@@ -53,7 +58,9 @@ class HardwarePeripheralScreen extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
               children: [
-                const _BoardHero(),
+                BoardSelector(style: _boardSelectorStyle()),
+                const SizedBox(height: 14),
+                _BoardHero(spec: spec),
                 const SizedBox(height: 24),
                 const _SectionHeading(
                   eyebrow: 'FIRMWARE DEFAULTS',
@@ -61,7 +68,7 @@ class HardwarePeripheralScreen extends StatelessWidget {
                   index: '01',
                 ),
                 const SizedBox(height: 10),
-                ..._peripheralRoutes.map(
+                ...spec.routes.map(
                   (route) => Padding(
                     padding: const EdgeInsets.only(bottom: 9),
                     child: _PeripheralCard(route: route),
@@ -74,48 +81,30 @@ class HardwarePeripheralScreen extends StatelessWidget {
                   index: '02',
                 ),
                 const SizedBox(height: 10),
-                const _OpenPinsPanel(),
+                _OpenPinsPanel(pins: spec.openPins),
                 const SizedBox(height: 10),
-                const _CautionNote(
-                  color: _kAmber,
-                  icon: Icons.warning_amber_rounded,
-                  title: 'BOOT / STRAPPING WARNING',
-                  body:
-                      'GPIO2, GPIO3, GPIO7, GPIO25, GPIO26, GPIO27, and GPIO28 '
-                      'affect configuration during boot or reset. Unused GPIO3, '
-                      'GPIO25, and GPIO28 should be protected from external '
-                      'circuits changing their logic levels.',
-                ),
-                const SizedBox(height: 8),
-                const _CautionNote(
-                  color: _kViolet,
-                  icon: Icons.usb_rounded,
-                  title: 'ALTERNATE BOARD FUNCTIONS',
-                  body:
-                      'GPIO13/14 are unused by this project’s peripheral wiring, '
-                      'but also serve USB D−/D+ and SDIO functions, so using them '
-                      'may conflict with USB. GPIO15 is reserved for PSRAM on the '
-                      'N16R8 module and is not considered available.',
-                ),
-                const SizedBox(height: 24),
+                for (final caution in spec.cautions) ...[
+                  caution,
+                  const SizedBox(height: 8),
+                ],
+                const SizedBox(height: 16),
                 const _SectionHeading(
                   eyebrow: 'PHYSICAL HEADER',
-                  title: 'Posisi pin J1 / J3',
+                  title: 'Physical pin map',
                   index: '03',
                 ),
                 const SizedBox(height: 10),
-                const _HeaderMapExpansion(),
+                _HeaderMapExpansion(groups: spec.headerGroups),
                 const SizedBox(height: 14),
-                const Text(
-                  'This map is based on the project’s default firmware and the '
-                  'ESP32-C5-DevKitC-1 v1.2. Verify your board revision and module '
-                  'before connecting wires.',
-                  style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5),
+                Text(
+                  spec.footerMain,
+                  style: const TextStyle(
+                      color: Colors.white38, fontSize: 11, height: 1.5),
                 ),
                 const SizedBox(height: 5),
-                const Text(
-                  'Board reference: Espressif ESP32-C5-DevKitC-1 · Hardware Reference',
-                  style: TextStyle(
+                Text(
+                  spec.footerRef,
+                  style: const TextStyle(
                     color: _kMuted,
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
@@ -128,6 +117,26 @@ class HardwarePeripheralScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The Hardware Peripheral screen's themed look for the shared [BoardSelector].
+ButtonStyle _boardSelectorStyle() {
+  return ButtonStyle(
+    backgroundColor: WidgetStateProperty.resolveWith(
+      (states) => states.contains(WidgetState.selected)
+          ? _kMint.withValues(alpha: 0.16)
+          : Colors.white.withValues(alpha: 0.03),
+    ),
+    foregroundColor: WidgetStateProperty.resolveWith(
+      (states) => states.contains(WidgetState.selected) ? _kMint : Colors.white70,
+    ),
+    side: WidgetStatePropertyAll(
+      BorderSide(color: _kMint.withValues(alpha: 0.30)),
+    ),
+    textStyle: const WidgetStatePropertyAll(
+      TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+    ),
+  );
 }
 
 const _peripheralRoutes = <_PeripheralRoute>[
@@ -194,7 +203,9 @@ const _peripheralRoutes = <_PeripheralRoute>[
 ];
 
 class _BoardHero extends StatelessWidget {
-  const _BoardHero();
+  const _BoardHero({required this.spec});
+
+  final _BoardSpec spec;
 
   @override
   Widget build(BuildContext context) {
@@ -236,9 +247,9 @@ class _BoardHero extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      'ESP32-C5',
-                      style: TextStyle(
+                    Text(
+                      spec.heroTitle,
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 27,
                         height: 1,
@@ -248,7 +259,7 @@ class _BoardHero extends StatelessWidget {
                     ),
                     const SizedBox(height: 7),
                     Text(
-                      'DevKitC-1 · WROOM-1-N16R8',
+                      spec.heroSubtitle,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.68),
                         fontSize: 11,
@@ -261,15 +272,7 @@ class _BoardHero extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 20),
-          Row(
-            children: const [
-              Expanded(child: _Metric(value: '14', label: 'DIPAKAI', color: _kMint)),
-              SizedBox(width: 8),
-              Expanded(child: _Metric(value: '7', label: 'UNUSED', color: Colors.white)),
-              SizedBox(width: 8),
-              Expanded(child: _Metric(value: '7', label: 'STRAPPING', color: _kAmber)),
-            ],
-          ),
+          Row(children: _metricRow(spec.metrics)),
           const SizedBox(height: 14),
           Row(
             children: [
@@ -277,7 +280,7 @@ class _BoardHero extends StatelessWidget {
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
-                  '14 unique GPIOs are assigned functions by the firmware and board.',
+                  spec.heroNote,
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.62),
                     fontSize: 10,
@@ -290,6 +293,15 @@ class _BoardHero extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  static List<Widget> _metricRow(List<_Metric> metrics) {
+    final out = <Widget>[];
+    for (var i = 0; i < metrics.length; i++) {
+      if (i > 0) out.add(const SizedBox(width: 8));
+      out.add(Expanded(child: metrics[i]));
+    }
+    return out;
   }
 }
 
@@ -583,17 +595,9 @@ class _PinBadge extends StatelessWidget {
 }
 
 class _OpenPinsPanel extends StatelessWidget {
-  const _OpenPinsPanel();
+  const _OpenPinsPanel({required this.pins});
 
-  static const _pins = <_OpenPin>[
-    _OpenPin(3, 'BOOT · MTDI', caution: true),
-    _OpenPin(10, 'Available'),
-    _OpenPin(13, 'USB D− · SDIO3', caution: true),
-    _OpenPin(14, 'USB D+ · SDIO2', caution: true),
-    _OpenPin(25, 'STRAPPING', caution: true),
-    _OpenPin(26, 'STRAPPING', caution: true),
-    _OpenPin(28, 'STRAPPING', caution: true),
-  ];
+  final List<_OpenPin> pins;
 
   @override
   Widget build(BuildContext context) {
@@ -609,7 +613,7 @@ class _OpenPinsPanel extends StatelessWidget {
           return Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: _pins
+            children: pins
                 .map((pin) => _OpenPinCard(pin: pin, width: itemWidth))
                 .toList(),
           );
@@ -738,11 +742,25 @@ class _CautionNote extends StatelessWidget {
   }
 }
 
+class _HeaderGroup {
+  const _HeaderGroup(this.title, this.pins);
+
+  final String title;
+  final List<_HeaderPin> pins;
+}
+
 class _HeaderMapExpansion extends StatelessWidget {
-  const _HeaderMapExpansion();
+  const _HeaderMapExpansion({required this.groups});
+
+  final List<_HeaderGroup> groups;
 
   @override
   Widget build(BuildContext context) {
+    final children = <Widget>[];
+    for (var i = 0; i < groups.length; i++) {
+      if (i > 0) children.add(const SizedBox(height: 10));
+      children.add(_HeaderPinMap(title: groups[i].title, pins: groups[i].pins));
+    }
     return Container(
       decoration: BoxDecoration(
         color: _kPanel.withValues(alpha: 0.97),
@@ -761,14 +779,10 @@ class _HeaderMapExpansion extends StatelessWidget {
             style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
           ),
           subtitle: const Text(
-            'Header number · GPIO · board function',
+            'Header/pad · GPIO · board function',
             style: TextStyle(color: Colors.white54, fontSize: 10),
           ),
-          children: const [
-            _HeaderPinMap(title: 'J1', pins: _j1Pins),
-            SizedBox(height: 10),
-            _HeaderPinMap(title: 'J3', pins: _j3Pins),
-          ],
+          children: children,
         ),
       ),
     );
@@ -831,6 +845,216 @@ const _j3Pins = <_HeaderPin>[
   _HeaderPin(16, 'NC', 'Not connected', blocked: true),
 ];
 
+// ── Board specifications ─────────────────────────────────────────────────────
+
+/// All board-specific data rendered by [HardwarePeripheralScreen], selected by
+/// the app-wide board setting. The DevKit spec reuses the original const data
+/// so its view is unchanged.
+class _BoardSpec {
+  const _BoardSpec({
+    required this.badge,
+    required this.heroTitle,
+    required this.heroSubtitle,
+    required this.heroNote,
+    required this.metrics,
+    required this.routes,
+    required this.openPins,
+    required this.cautions,
+    required this.headerGroups,
+    required this.footerMain,
+    required this.footerRef,
+  });
+
+  final String badge;
+  final String heroTitle;
+  final String heroSubtitle;
+  final String heroNote;
+  final List<_Metric> metrics;
+  final List<_PeripheralRoute> routes;
+  final List<_OpenPin> openPins;
+  final List<Widget> cautions;
+  final List<_HeaderGroup> headerGroups;
+  final String footerMain;
+  final String footerRef;
+}
+
+const _devkitOpenPins = <_OpenPin>[
+  _OpenPin(3, 'BOOT · MTDI', caution: true),
+  _OpenPin(10, 'Available'),
+  _OpenPin(13, 'USB D− · SDIO3', caution: true),
+  _OpenPin(14, 'USB D+ · SDIO2', caution: true),
+  _OpenPin(25, 'STRAPPING', caution: true),
+  _OpenPin(26, 'STRAPPING', caution: true),
+  _OpenPin(28, 'STRAPPING', caution: true),
+];
+
+const _devkitCautions = <Widget>[
+  _CautionNote(
+    color: _kAmber,
+    icon: Icons.warning_amber_rounded,
+    title: 'BOOT / STRAPPING WARNING',
+    body: 'GPIO2, GPIO3, GPIO7, GPIO25, GPIO26, GPIO27, and GPIO28 affect '
+        'configuration during boot or reset. Unused GPIO3, GPIO25, and GPIO28 '
+        'should be protected from external circuits changing their logic levels.',
+  ),
+  _CautionNote(
+    color: _kViolet,
+    icon: Icons.usb_rounded,
+    title: 'ALTERNATE BOARD FUNCTIONS',
+    body: 'GPIO13/14 are unused by this project’s peripheral wiring, but also '
+        'serve USB D−/D+ and SDIO functions, so using them may conflict with '
+        'USB. GPIO15 is reserved for PSRAM on the N16R8 module and is not '
+        'considered available.',
+  ),
+];
+
+const _devkitSpec = _BoardSpec(
+  badge: 'N16R8',
+  heroTitle: 'ESP32-C5',
+  heroSubtitle: 'DevKitC-1 · WROOM-1-N16R8',
+  heroNote: '14 unique GPIOs are assigned functions by the firmware and board.',
+  metrics: [
+    _Metric(value: '14', label: 'DIPAKAI', color: _kMint),
+    _Metric(value: '7', label: 'UNUSED', color: Colors.white),
+    _Metric(value: '7', label: 'STRAPPING', color: _kAmber),
+  ],
+  routes: _peripheralRoutes,
+  openPins: _devkitOpenPins,
+  cautions: _devkitCautions,
+  headerGroups: [
+    _HeaderGroup('J1', _j1Pins),
+    _HeaderGroup('J3', _j3Pins),
+  ],
+  footerMain: 'This map is based on the project’s default firmware and the '
+      'ESP32-C5-DevKitC-1 v1.2. Verify your board revision and module before '
+      'connecting wires.',
+  footerRef: 'Board reference: Espressif ESP32-C5-DevKitC-1 · Hardware Reference',
+);
+
+// ── Seeed XIAO ESP32-C5 (8 MB flash / 8 MB PSRAM) ────────────────────────────
+
+const _xiaoRoutes = <_PeripheralRoute>[
+  _PeripheralRoute(
+    icon: Icons.alt_route,
+    color: _kViolet,
+    title: 'Shared SPI bus',
+    subtitle: 'Shared bus for nRF24, CC1101, and microSD',
+    note: 'Native SPI pads D8/D9/D10. microSD initializes before radio access.',
+    pins: [_PinUse('SCK', 8), _PinUse('MISO', 9), _PinUse('MOSI', 10)],
+  ),
+  _PeripheralRoute(
+    icon: Icons.settings_input_antenna,
+    color: Color(0xFF66B7FF),
+    title: 'nRF24L01+',
+    subtitle: 'Radio 2.4 GHz',
+    note: 'Uses the shared SPI bus (pads D6/D7).',
+    pins: [_PinUse('CSN', 11), _PinUse('CE', 12)],
+  ),
+  _PeripheralRoute(
+    icon: Icons.settings_input_antenna,
+    color: _kAmber,
+    title: 'CC1101',
+    subtitle: 'Radio sub-GHz',
+    note: 'Uses the shared SPI bus (pads D4/D5).',
+    pins: [_PinUse('CS', 23), _PinUse('GDO0', 24)],
+  ),
+  _PeripheralRoute(
+    icon: Icons.settings_remote,
+    color: Color(0xFFFF7770),
+    title: 'Infrared',
+    subtitle: 'Receiver and transmitter',
+    note: 'RX receives signals; TX transmits (pads D2/D0).',
+    pins: [_PinUse('RX', 25), _PinUse('TX', 1)],
+  ),
+  _PeripheralRoute(
+    icon: Icons.circle,
+    color: Color(0xFFFFB44C),
+    title: 'Onboard USER LED',
+    subtitle: 'Single-colour status LED',
+    note: 'USER_LED on GPIO27 driven by PWM, not an addressable WS2812.',
+    pins: [_PinUse('LED', 27)],
+  ),
+  _PeripheralRoute(
+    icon: Icons.sd_storage,
+    color: Color(0xFF84AFFF),
+    title: 'microSD',
+    subtitle: 'Chip select and card detection',
+    note: 'Data lines use the shared SPI bus (pads D1/D3).',
+    pins: [_PinUse('CS', 0), _PinUse('DETECT', 7)],
+  ),
+];
+
+const _xiaoOpenPins = <_OpenPin>[
+  _OpenPin(2, 'JTAG MTMS · rear', caution: true),
+  _OpenPin(3, 'JTAG MTDI · rear', caution: true),
+  _OpenPin(4, 'JTAG MTCK · rear', caution: true),
+  _OpenPin(5, 'JTAG MTDO · rear', caution: true),
+  _OpenPin(6, 'ADC_BAT · battery', caution: true),
+  _OpenPin(26, 'ADC_CRL · battery', caution: true),
+  _OpenPin(28, 'BOOT', caution: true),
+];
+
+const _xiaoCautions = <Widget>[
+  _CautionNote(
+    color: _kAmber,
+    icon: Icons.warning_amber_rounded,
+    title: 'BOOT / RESERVED PINS',
+    body: 'All 11 castellated pads (D0–D10) are assigned. GPIO28 is BOOT and '
+        'GPIO27 is the USER_LED. The JTAG pads GPIO2/3/4/5 (MTMS/MTDI/MTCK/MTDO) '
+        'are on the reverse side and are reserved for debugging.',
+  ),
+  _CautionNote(
+    color: _kViolet,
+    icon: Icons.usb_rounded,
+    title: 'BATTERY & NO UART FLASHER',
+    body: 'GPIO6 (ADC_BAT) and GPIO26 (ADC_CRL) are wired to the onboard '
+        'battery-voltage divider and are not exposed as pads. No pad is free for '
+        'the UART ESP-flasher, so that feature is unavailable on the XIAO.',
+  ),
+];
+
+const _xiaoLeftPads = <_HeaderPin>[
+  _HeaderPin(1, 'GPIO1', 'D0 · Infrared TX', inUse: true),
+  _HeaderPin(2, 'GPIO0', 'D1 · microSD CS', inUse: true),
+  _HeaderPin(3, 'GPIO25', 'D2 · Infrared RX', inUse: true),
+  _HeaderPin(4, 'GPIO7', 'D3 · microSD detect', inUse: true),
+  _HeaderPin(5, 'GPIO23', 'D4 · CC1101 CS', inUse: true),
+  _HeaderPin(6, 'GPIO24', 'D5 · CC1101 GDO0', inUse: true),
+  _HeaderPin(7, 'GPIO11', 'D6 · nRF24 CSN', inUse: true),
+];
+
+const _xiaoRightPads = <_HeaderPin>[
+  _HeaderPin(1, '5V', 'Power', blocked: true),
+  _HeaderPin(2, 'GND', 'Ground', blocked: true),
+  _HeaderPin(3, '3V3', 'Power', blocked: true),
+  _HeaderPin(4, 'GPIO10', 'D10 · SPI MOSI', inUse: true),
+  _HeaderPin(5, 'GPIO9', 'D9 · SPI MISO', inUse: true),
+  _HeaderPin(6, 'GPIO8', 'D8 · SPI SCK', inUse: true),
+  _HeaderPin(7, 'GPIO12', 'D7 · nRF24 CE', inUse: true),
+];
+
+const _xiaoSpec = _BoardSpec(
+  badge: 'C5HR8',
+  heroTitle: 'XIAO ESP32-C5',
+  heroSubtitle: 'Seeed Studio · 8 MB flash / 8 MB PSRAM',
+  heroNote: 'All 11 castellated pads (D0–D10) are assigned by the firmware.',
+  metrics: [
+    _Metric(value: '11', label: 'PADS USED', color: _kMint),
+    _Metric(value: '0', label: 'FREE', color: Colors.white),
+    _Metric(value: '4', label: 'JTAG REAR', color: _kAmber),
+  ],
+  routes: _xiaoRoutes,
+  openPins: _xiaoOpenPins,
+  cautions: _xiaoCautions,
+  headerGroups: [
+    _HeaderGroup('Left pads', _xiaoLeftPads),
+    _HeaderGroup('Right pads', _xiaoRightPads),
+  ],
+  footerMain: 'This map is based on the project firmware and the Seeed Studio '
+      'XIAO ESP32-C5 pad layout. Verify your board before connecting wires.',
+  footerRef: 'Board reference: Seeed Studio XIAO ESP32-C5 · Wiki pinout',
+);
+
 class _HeaderPinMap extends StatelessWidget {
   const _HeaderPinMap({required this.title, required this.pins});
 
@@ -862,7 +1086,8 @@ class _HeaderPinMap extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 7),
-                const Text('16-pin header', style: TextStyle(color: Colors.white38, fontSize: 9)),
+                Text('${pins.length}-pin header',
+                    style: const TextStyle(color: Colors.white38, fontSize: 9)),
               ],
             ),
           ),

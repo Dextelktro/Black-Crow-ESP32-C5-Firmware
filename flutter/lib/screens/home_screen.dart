@@ -3,7 +3,9 @@ import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
 import '../services/settings.dart';
+import '../theme/app_theme.dart';
 import '../widgets/device_issue_banner.dart';
+import '../widgets/glass_surface.dart';
 import 'ble_scan_screen.dart';
 import 'ble_spam_screen.dart';
 import 'ble_spectrum_screen.dart';
@@ -24,7 +26,7 @@ import 'subghz_hub_screen.dart';
 import 'wifi_live_scan_screen.dart';
 import 'wifi_spam_screen.dart';
 
-const _kAccent = Color(0xFF2EE6C5);
+const _kAccent = AppColors.accent;
 
 /// Home dashboard. Shows the BLE link, live CPU load, theme toggle, LED
 /// control and the RF tool entries.
@@ -94,23 +96,11 @@ class _HomeBodyState extends State<HomeBody> {
         DeviceIssueBanner(controller: ctrl),
 
         // ── Link + CPU load hero card ────────────────────────
-        Container(
+        GlassCard(
           padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            gradient: const LinearGradient(
-              colors: [Color(0xFF07201C), Color(0xFF04100E)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            border: Border.all(color: _kAccent.withValues(alpha: 0.35)),
-            boxShadow: [
-              BoxShadow(
-                color: _kAccent.withValues(alpha: 0.10),
-                blurRadius: 18,
-              ),
-            ],
-          ),
+          radius: AppRadius.hero,
+          accent: _kAccent,
+          active: true,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -135,26 +125,7 @@ class _HomeBodyState extends State<HomeBody> {
                       ),
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color: (connected ? _kAccent : const Color(0xFFFF5050))
-                          .withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      connected ? 'LINKED' : 'LOST',
-                      style: TextStyle(
-                        color: connected ? _kAccent : const Color(0xFFFF5050),
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
-                  ),
+                  LinkStatusChip(connected: connected),
                 ],
               ),
               const SizedBox(height: 4),
@@ -280,15 +251,10 @@ class _HomeBodyState extends State<HomeBody> {
         ),
         const SizedBox(height: 14),
 
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 450),
-          curve: Curves.easeInOut,
+        GlassCard(
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            color: const Color(0xFF07201C),
-            border: Border.all(color: temperatureColor.withValues(alpha: 0.45)),
-          ),
+          accent: temperatureColor,
+          active: true,
           child: Row(
             children: [
               TweenAnimationBuilder<Color?>(
@@ -354,13 +320,8 @@ class _HomeBodyState extends State<HomeBody> {
         const SizedBox(height: 14),
 
         // ── System memory / storage card ─────────────────────
-        Container(
+        GlassCard(
           padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            color: const Color(0xFF07201C),
-            border: Border.all(color: _kAccent.withValues(alpha: 0.3)),
-          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -402,7 +363,7 @@ class _HomeBodyState extends State<HomeBody> {
                 label: 'RAM (internal)',
                 free: ctrl.sysHeapFree,
                 total: ctrl.sysHeapTotal,
-                color: const Color(0xFF2EE6C5),
+                color: AppColors.accent,
                 fresh: sysIsFresh,
               ),
               const SizedBox(height: 10),
@@ -507,18 +468,7 @@ class _HomeBodyState extends State<HomeBody> {
         ),
         const SizedBox(height: 14),
 
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 8),
-          child: Text(
-            'RF TOOLS',
-            style: TextStyle(
-              color: Color(0xFFB1C2BD),
-              fontSize: 12,
-              letterSpacing: 1.2,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
+        const SectionHeader('RF TOOLS'),
         _ToolRow(
           icon: Icons.wifi,
           color: const Color(0xFF4FA8FF),
@@ -625,18 +575,7 @@ class _HomeBodyState extends State<HomeBody> {
         ),
 
         const SizedBox(height: 18),
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 8),
-          child: Text(
-            '2.4 GHz RADIO · nRF24 MODULE',
-            style: TextStyle(
-              color: Color(0xFFB1C2BD),
-              fontSize: 12,
-              letterSpacing: 1.2,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
+        const SectionHeader('2.4 GHz RADIO · nRF24 MODULE'),
         _ToolRow(
           icon: Icons.settings_input_antenna,
           color: const Color(0xFFFF2D78),
@@ -646,18 +585,7 @@ class _HomeBodyState extends State<HomeBody> {
         ),
 
         const SizedBox(height: 18),
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 8),
-          child: Text(
-            'INFRARED · 38 kHz',
-            style: TextStyle(
-              color: Color(0xFFB1C2BD),
-              fontSize: 12,
-              letterSpacing: 1.2,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
+        const SectionHeader('INFRARED · 38 kHz'),
         _ToolRow(
           icon: Icons.settings_remote,
           color: const Color(0xFFFF5A52),
@@ -667,18 +595,7 @@ class _HomeBodyState extends State<HomeBody> {
         ),
 
         const SizedBox(height: 18),
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 8),
-          child: Text(
-            'SUB-GHZ RADIO · CC1101 MODULE',
-            style: TextStyle(
-              color: Color(0xFFB1C2BD),
-              fontSize: 12,
-              letterSpacing: 1.2,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
+        const SectionHeader('SUB-GHZ RADIO · CC1101 MODULE'),
         _ToolRow(
           icon: Icons.settings_input_antenna,
           color: const Color(0xFFFFB020),
@@ -745,50 +662,35 @@ class _TileCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final radius = BorderRadius.circular(14);
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: radius,
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0x1FFFFFFF), Color(0x0AFFFFFF)],
-            ),
-            borderRadius: radius,
-            border: Border.all(color: const Color(0xB0344640)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return GlassCard(
+      onTap: onTap,
+      padding: const EdgeInsets.all(14),
+      radius: AppRadius.tile,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Icon(icon, color: color, size: 22),
-                  const Spacer(),
-                  ?trailing,
-                ],
-              ),
-              const SizedBox(height: 10),
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                subtitle,
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
+              Icon(icon, color: color, size: 22),
+              const Spacer(),
+              ?trailing,
             ],
           ),
-        ),
+          const SizedBox(height: 10),
+          Text(
+            title,
+            style: const TextStyle(
+              color: AppColors.text,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            style: const TextStyle(color: AppColors.textDim, fontSize: 12),
+          ),
+        ],
       ),
     );
   }
@@ -844,68 +746,52 @@ class _ToolRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final radius = BorderRadius.circular(14);
-    final outline = active
-        ? color.withValues(alpha: 0.78)
-        : const Color(0xB0344640);
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: radius,
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0x1FFFFFFF), Color(0x0AFFFFFF)],
+    return GlassCard(
+      onTap: onTap,
+      padding: const EdgeInsets.all(14),
+      radius: AppRadius.tile,
+      accent: color,
+      active: active,
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
             ),
-            borderRadius: radius,
-            border: Border.all(color: outline),
+            child: leadingWidget ?? Icon(icon, color: color, size: 24),
           ),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(12),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: AppColors.text,
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-                child: leadingWidget ?? Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    color: AppColors.textDim,
+                    fontSize: 12,
+                  ),
                 ),
-              ),
-              Icon(
-                Icons.chevron_right,
-                color: active ? color : const Color(0xFF91AAA4),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+          Icon(
+            Icons.chevron_right,
+            color: active ? color : AppColors.textFaint,
+          ),
+        ],
       ),
     );
   }

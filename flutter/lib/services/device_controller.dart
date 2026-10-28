@@ -1472,6 +1472,7 @@ class DeviceController extends ChangeNotifier {
           proto: readKnown.group(1)!,
           bits: bits,
           keyHex: _sgFormatKey(readKnown.group(3)!, bits),
+          keyRawHex: readKnown.group(3)!,
           te: int.tryParse(readKnown.group(4)!) ?? 0,
           freqHz: int.tryParse(readKnown.group(5)!) ?? subghzFreqHz,
           rssi: int.tryParse(readKnown.group(6)!) ?? -128,
@@ -1484,27 +1485,11 @@ class DeviceController extends ChangeNotifier {
       subghzHasCapture = true;
       return;
     }
-    final readUnknown = _reSgReadUnknown.firstMatch(line);
-    if (readUnknown != null) {
-      if (!subghzReadRunning) return;
-      subghzDecoded.insert(
-        0,
-        SubghzDecoded(
-          proto: 'unknown',
-          bits: 0,
-          keyHex: '',
-          te: 0,
-          freqHz: int.tryParse(readUnknown.group(2)!) ?? subghzFreqHz,
-          rssi: int.tryParse(readUnknown.group(3)!) ?? -128,
-          at: DateTime.now(),
-        ),
-      );
-      while (subghzDecoded.length > _subghzDecodedMax) {
-        subghzDecoded.removeLast();
-      }
-      subghzHasCapture = true;
-      return;
-    }
+    // READ mode now only reports genuinely decoded protocols (firmware no
+    // longer emits `proto=unknown`), so the decoded list is pure signal. The
+    // legacy unknown matcher is kept to defensively ignore any such line from
+    // an older firmware rather than list it as a signal.
+    if (_reSgReadUnknown.hasMatch(line)) return;
     final raw = _reSgRaw.firstMatch(line);
     if (raw != null) {
       if (!subghzReadRawRunning) return;
@@ -4890,6 +4875,17 @@ class DeviceController extends ChangeNotifier {
   }
 
   Future<void> subghzSave(String name) => _sendCommand('subghz save $name');
+
+  /// Save ANY decoded signal the user picked from the Read list (not just the
+  /// firmware's most recent decode). Sends the stored fields back so firmware
+  /// writes a Flipper Key File for exactly that signal.
+  Future<void> subghzSaveDecoded(String name, SubghzDecoded d) {
+    final key = d.keyRawHex.isNotEmpty ? d.keyRawHex : '0';
+    return _sendCommand(
+      'subghz savekey $name ${d.proto} ${d.bits} $key ${d.te} ${d.freqHz} '
+      '$subghzPresetId',
+    );
+  }
 
   Future<void> subghzInfo(String name) async {
     subghzLastInfo = null;

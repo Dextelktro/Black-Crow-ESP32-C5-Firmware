@@ -28,6 +28,12 @@ val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(keystorePropertiesFile.inputStream())
 }
+val releaseSigningPropertyKeys = listOf(
+    "keyAlias",
+    "keyPassword",
+    "storeFile",
+    "storePassword",
+)
 
 extensions.configure<ApplicationExtension> {
     namespace = "com.brito.deauther.deauther"
@@ -44,8 +50,12 @@ extensions.configure<ApplicationExtension> {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.brito.deauther.deauther"
+        // Unique Application ID for this fork. Kept distinct from upstream
+        // deauther forks so that a differently-signed build of another app
+        // cannot share this package name and make the install fail at 100%
+        // with "App not installed". The internal `namespace` above is a
+        // separate, build-only identifier and is intentionally left unchanged.
+        applicationId = "com.blackcrow.deauther"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -57,27 +67,48 @@ extensions.configure<ApplicationExtension> {
 
     signingConfigs {
         create("release") {
-            if (keystorePropertiesFile.exists()) {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
-            }
+            enableV2Signing = true
+            keystoreProperties.getProperty("keyAlias")?.let { keyAlias = it }
+            keystoreProperties.getProperty("keyPassword")?.let { keyPassword = it }
+            keystoreProperties.getProperty("storeFile")?.let { storeFile = file(it) }
+            keystoreProperties.getProperty("storePassword")?.let { storePassword = it }
         }
     }
 
     buildTypes {
         release {
-            // Real release signing when key.properties is present (CI, or a
-            // local release build); falls back to debug signing only when
-            // it's missing (e.g. a contributor's local checkout), so
-            // `flutter run --release` still works out of the box for them.
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig = signingConfigs.getByName("release")
         }
+    }
+}
+
+val validateReleaseSigning = tasks.register("validateReleaseSigning") {
+    doLast {
+        if (!keystorePropertiesFile.isFile) {
+            throw GradleException(
+                "Android release builds require android/key.properties with the permanent release keystore credentials.",
+            )
+        }
+        val missingProperties = releaseSigningPropertyKeys.filter {
+            keystoreProperties.getProperty(it).isNullOrBlank()
+        }
+        if (missingProperties.isNotEmpty()) {
+            throw GradleException(
+                "Missing Android release signing properties: ${missingProperties.joinToString()}",
+            )
+        }
+        val keystoreFile = file(keystoreProperties.getProperty("storeFile"))
+        if (!keystoreFile.isFile) {
+            throw GradleException(
+                "Android release keystore does not exist: $keystoreFile",
+            )
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name != validateReleaseSigning.name && name.contains("Release", ignoreCase = true)) {
+        dependsOn(validateReleaseSigning)
     }
 }
 
