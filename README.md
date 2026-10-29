@@ -257,9 +257,9 @@ Issues section. Every contribution is greatly appreciated.
 
 ## Community & Support
 
-[![Discord](https://img.shields.io/discord/1561443235505766422?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/TYxNvFuns)
+[![Discord](https://img.shields.io/discord/1561443235505766422?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/7hfsUcDPN)
 
-Join the [Discord server](https://discord.gg/TYxNvFuns) to follow development updates, ask questions, report issues, or contribute to the project.
+Join the [Discord server](https://discord.gg/7hfsUcDPN) to follow development updates, ask questions, report issues, or contribute to the project.
 
 If you find this project useful, you can also support its development by:
 

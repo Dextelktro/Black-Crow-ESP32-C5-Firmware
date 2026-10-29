@@ -2,7 +2,7 @@
 import { Flasher } from "./flasher.js";
 import { SerialMonitor } from "./monitor.js";
 
-const DISCORD_URL = "https://discord.gg/DV4bGbYCF";
+const DISCORD_URL = "https://discord.gg/7hfsUcDPN";
 
 /* ------------------------------------------------------------------ *
  * Tiny terminal renderer: honors \r (carriage return) for progress   *
