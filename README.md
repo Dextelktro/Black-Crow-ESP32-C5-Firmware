@@ -1,6 +1,6 @@
-## Black Crow Firmware ESP32 C5
+## Black Crow Firmware (BCFW) — ESP32-C5
 
-**Bcfw/Short for Black Crow Firmware, it's designed for security projects, no USB cable needed, no TFT screen or buttons required. No hardware yet and only have an ESP32 C5 board?** No problem, the firmware connects to the app via BLE (NIMBLE) which is super easy to link, and you can start using it right after flashing and downloading the app.
+**BCFW**, short for **Black Crow Firmware**, is built for security projects — no USB cable needed, no TFT screen or buttons required. Only have a bare ESP32-C5 board with no extra peripherals wired up? No problem — the firmware connects to the companion app via BLE (NimBLE), which is quick to pair, so you can start using it right after flashing and installing the app.
 
 <p align="center">
   <img src="screenshots/black-crow-firmware.jpeg" alt="Black Crow Network and Embedded Experiment Laboratory logo" width="800">
@@ -20,9 +20,9 @@
 > Pilih board, pilih port USB, lalu **Erase** / **Start Flash** dan buka **serial
 > monitor** bawaan.
 
-# ESP32-C5 Multi-Radio Lab Toolkit
+## Overview
 
-Firmware and companion controllers for the **ESP32-C5-DevKitC-1** with an
+**Black Crow Firmware (BCFW)** and its companion controllers target the **ESP32-C5-DevKitC-1** with an
 **ESP32-C5-WROOM-1-N16R8** module. The firmware is configured for 16 MB flash
 and 8 MB quad-SPI PSRAM.
 
@@ -86,7 +86,7 @@ device advertises as **Radio C5**.
 
 ### Main board
 
-### This firmware supports the ESP32-C5-DevKitC-1 (N16R8, 16 MB) and the Seeed Studio XIAO ESP32-C5 (8 MB) from one code base; other RAM variants may be added in the future.
+This firmware supports the ESP32-C5-DevKitC-1 (N16R8, 16 MB) and the Seeed Studio XIAO ESP32-C5 (8 MB) from one code base; other RAM variants may be added in the future.
 
 - **Board:** Espressif ESP32-C5-DevKitC-1.
 - **Module:** ESP32-C5-WROOM-1-N16R8 (16 MB flash, 8 MB quad-SPI PSRAM).
@@ -127,19 +127,15 @@ the project targets `esp32c5`.
 cd esp32-c5
 idf.py set-target esp32c5
 idf.py build
+```
 
-# or use this method if the previous one has problems
+```powershell
+# Windows PowerShell — if idf.py isn't on PATH, source your ESP-IDF environment first
+# (adjust the path below to wherever you installed ESP-IDF)
+. "$HOME\esp\esp-idf\export.ps1"
 
-# Firmware build (from the cloned root repo)
 Set-Location ".\esp32-c5"
-
-$compilerBin = "C:\Espressif\tools\tools\riscv32-esp-elf\esp-14.2.0_20241119\riscv32-esp-elf\bin"
-Test-Path "$compilerBin\riscv32-esp-elf-gcc.exe"
-
-$env:PATH = "$compilerBin;$env:PATH"
-$env:IDF_TARGET = "esp32c5"
-
-Get-Command riscv32-esp-elf-gcc.exe
+idf.py set-target esp32c5
 idf.py reconfigure
 idf.py build
 ```
@@ -250,11 +246,18 @@ GPL-3.0 **Flipper Zero Unleashed** firmware
 Because that upstream is GPL-3.0, the combined work here is licensed
 GPL-3.0-or-later. Full per-component attribution is in [`NOTICE`](NOTICE).
 
-## Contributions
+## Contributing
 
-This project is open source. You can help develop it through the Discord
-community. If you find any bugs or issues, feel free to report them in the
-Issues section. Every contribution is greatly appreciated.
+This project is open source. Discussion and development happen on the community Discord, and if you find a bug, please report it in **Issues**. Every contribution is appreciated.
+
+### PR Requirements
+
+- **Explain the change** — in the PR description, state what was changed/fixed and the problem/goal behind it.
+- **Must be tested before opening the PR**, and include the test results (board used, test steps, outcome).
+- **Internal RAM efficiency is required.** After making changes, check RAM usage and include the results in the PR. RAM savings must not come at the cost of features, performance, or firmware stability.
+- **AI-assisted or manual coding is fine**, either way. But make sure you fully understand and have reviewed the code — AI-generated code isn't always bug-free, so don't submit code you don't understand yourself.
+- **Large changes must be separated** from other fixes (separate PRs), and tested more thoroughly to ensure compatibility and stability.
+- All PRs will be carefully reviewed before being merged.
 
 ## Community & Support
 
@@ -262,9 +265,11 @@ Issues section. Every contribution is greatly appreciated.
 
 Join the [Discord server](https://discord.gg/7hfsUcDPN) to follow development updates, ask questions, report issues, or contribute to the project.
 
+This project is also supported by the [**Flipper-Zero-ESP32-Port / Sor3nt**](https://github.com/Sor3nt/Flipper-Zero-ESP32-Port) community — thanks for the support and for welcoming this project into your Discord, and thanks to everyone who has contributed and supported this project along the way.
+
 If you find this project useful, you can also support its development by:
 
-- ⭐ Starring this repository
+- ⭐ Starring this repository.
 
 ## 🚧 Disclaimer
 This application is intended solely for legal and authorized security testing purposes. Using this software for malicious or unauthorized activity is strictly prohibited. By downloading, installing, or using the apps and firmware, you agree to comply with all applicable laws and regulations.
@@ -275,7 +280,7 @@ The developer of this project is not responsible for any misuse of this software
 This project is **free software** distributed under the **GNU General Public
 License v3.0 or later (GPL-3.0-or-later)**. It incorporates Sub-GHz and infrared
 components derived from the GPL-3.0-licensed
-[Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware),
+[Flipper Zero Unleashed firmware](https://github.com/DarkFlippers/unleashed-firmware),
 which is why the combined work is licensed under the GPL.
 
 See [`LICENSE`](LICENSE) for the full license text and [`NOTICE`](NOTICE) for
