@@ -4,8 +4,14 @@ import 'package:provider/provider.dart';
 import 'screens/scan_screen.dart';
 import 'services/api_server.dart';
 import 'services/settings.dart';
+import 'services/transition_aware_observer.dart';
 import 'theme/app_theme.dart';
-import 'widgets/glass_surface.dart';
+
+/// One stable observer for the app's lifetime. It opens [UiTransitionGate]
+/// while routes animate so BLE telemetry stops rebuilding whole screens during
+/// a push/pop. Kept at file scope so the [MaterialApp] rebuilds (driven by the
+/// [Settings] consumer) reuse the same instance instead of re-registering it.
+final _transitionObserver = TransitionAwareObserver();
 
 void main() {
   final settings = Settings();
@@ -33,9 +39,7 @@ class DeautherApp extends StatelessWidget {
           themeMode: s.darkMode ? ThemeMode.dark : ThemeMode.light,
           darkTheme: buildDarkTheme(),
           theme: buildLightTheme(),
-          // Paint the ambient layer behind every route so the translucent
-          // glass cards have real colour to reveal.
-          builder: (context, child) => AppBackground(child: child ?? const SizedBox.shrink()),
+          navigatorObservers: [_transitionObserver],
           home: const ScanScreen(),
         ),
       ),

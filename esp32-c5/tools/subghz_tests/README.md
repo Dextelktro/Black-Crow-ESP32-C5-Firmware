@@ -14,7 +14,7 @@ Run:
     python esp32-c5/tools/subghz_tests/test_subghz_keyfile.py    # protocol Key File
     python esp32-c5/tools/subghz_tests/test_subghz_pipeline.py   # capture pipeline (RMT seg + normalize -> decode)
 
-Latest host run: 288 PASS across the four scripts below, 0 FAIL.
+Latest host run: 440 PASS across the four scripts below, 0 FAIL.
 
 ## Capture boundary (Stage 7 Part C)
 
@@ -41,15 +41,39 @@ two-frame Read confirmation, optional strict-RAW waveform matching,
 duplicate suppression, the delayed RSSI qualification hold, and median-of-three
 RSSI sampling. The test reads the relevant firmware `#define`s so capture
 thresholds, confirmation windows, and sample counts cannot silently drift
-from the model. Analyzer checks cover the absolute RSSI floor and local
-sideband margin.
+from the model. Analyzer checks cover the user-adjustable detection trigger and
+the start-time auto-calibration that sets it a fixed margin above the measured
+band noise floor (the old fixed absolute RSSI floor and sideband margin are
+gone).
 
 ## Verified now (logic)
 
-- Decode of Princeton / Linear / Clemsa / CAME / Nice FLO / Holtek / Gate-TX /
-  Doitrand / Phoenix_V2 (AM) and Ansonic (FM) from independent synthetic
-  captures → correct protocol, key and bit count (incl. 18-, 37- and 52-bit
-  keys). Clemsa shares the HIGH-first helper with Linear (7:1 vs 3:1 ratio).
+- Decode of Princeton / Linear / Clemsa / SMC5326 / Dooya / Magellan /
+  Intertechno_V3 / CAME / Nice FLO / Holtek / Gate-TX / Doitrand / Phoenix_V2 (AM)
+  and Ansonic (FM) from independent synthetic captures → correct protocol, key and
+  bit count (incl. 18-, 25-, 32-, 37-, 40- and 52-bit keys). Intertechno_V3
+  (32-bit) is bespoke: a short-high + te_short*10 (2750 us) sync, then 32 bits each
+  sent as TWO (short H, low) pairs — the first low sets the bit (short=0, long=1)
+  and the second is its complement. The ~10.4 ms inter-frame gap gives each frame
+  its own reception; the capture trims the final bit's complement low (a trailing
+  low) so a frame can end on the 32nd bit's second high, which the decoder accepts
+  (the bit value is already fixed by the first low). The 36-bit dimming sub-variant
+  is NOT supported (such a frame is rejected, not mis-decoded). Magellan (32-bit) is a bespoke decoder: a
+  sync-pulse train (>10 short/short pairs), a (short,long) marker, a (te_short*6,
+  long) start bit, 32 HIGH-first 2:1 bits (inverted vs Dooya), a lone stop high,
+  and a CRC-8/0x31 over the upper 3 bytes that gates acceptance (so it runs last
+  and cannot false-trigger; a corrupted CRC or <11 sync pairs is rejected).
+  Clemsa/SMC5326/Dooya share the HIGH-first helper with
+  Linear (7:1, 3:1, 2:1 and 3:1 ratios). SMC5326 (25-bit) adds a thin wrapper for
+  its trailing stop high and is dispatched before Princeton (its exact-25 +
+  whole-frame consume keeps a Princeton-24 frame from being stolen, and
+  vice-versa); its encoder reuses encode_princeton with a te*25 guard. Dooya
+  (40-bit) gates its start-high (te_short*13 = 4758 us, ±te_delta*5) and start-low
+  (te_long*2 = 1466 us, ±te_delta*3) preamble — the start low sits above an
+  ordinary long leg (733 + te_delta*2 = 973), so no data pair can satisfy it —
+  then decodes 40 HIGH-first 2:1 bits with a te_delta*2 long-leg window; the 40th
+  bit's low merges into the next frame's ~9 ms header, so it arrives as a lone
+  trailing high.
 - Timing tolerance: CAME holds ±20%; Princeton ±5–10% (tighter — discriminated
   by the 3:1 ratio); Ansonic ±10% (its te_delta=120 on te_long=1111 is the
   faithful edge — Flipper rejects beyond it too); Gate-TX ±10% (short-leg
@@ -105,9 +129,12 @@ sideband margin.
   immediately, rejects truncated captures, and suppresses similar duplicates
   for 1.5 seconds; it never waits for a second transmission. The RAW RSSI gate
   uses a 100 ms last-above hold and defaults to -90 dBm, matching Flipper
-  Unleashed. The analyzer's absolute RSSI floor is -105 dBm plus a 6 dB local
-  sideband margin. These are logic-tested, but threshold calibration and
-  false-detection rates still require RF hardware measurements.
+  Unleashed. The analyzer has no fixed absolute floor: at start it auto-
+  calibrates a detection trigger SUBGHZ_ANALYZER_AUTOCAL_MARGIN_DB above the
+  band noise floor it measures, and the user can override that trigger from the
+  app (clamped to the -110..0 dBm firmware range). These are logic-tested, but
+  threshold calibration and false-detection rates still require RF hardware
+  measurements.
   The "header gap > 10 ms stop-threshold segments frames" assumption is proven
   at the logic level; real on-air pulse timing remains hardware-pending.
 - Ansonic/2FSK TX actually demodulating on a real FM receiver (the GPTimer path
@@ -136,17 +163,18 @@ sideband margin.
 - Linear: Flipper stores the raw data bits in the `.sub` (what we store too) but
   DISPLAYS `~data` for historical remote compatibility. Matching that inverted
   display is an app-layer concern; the stored/encoded value is the raw bits.
+- Holtek_HT12X (12-bit): on-air timing (ts 320 / tl 640) is identical to CAME-12
+  with no distinguishing header/checksum, and the only difference (preamble
+  length) is stripped by capture — so a single frame cannot be told apart. Handled
+  as a NAME ALIAS to the CAME codec (like EV1527→Princeton), NOT a separate
+  decoder; decode/save report "CAME".
 - Deferred protocols (need more than fixed-window single-burst decode):
-  - SMC5326: inter-frame guard is only ~7.2 ms, BELOW the 10 ms RMT stop
-    threshold, so consecutive frames would not segment; needs a capture-threshold
-    decision (and runtime TE + two-frame confirm) before it can be added safely.
-  - Holtek_HT12X (12-bit): on-air timing (ts 320 / tl 640) is identical to
-    CAME-12, so it cannot be distinguished from timing alone — would just be a
-    dispatch coin-flip with CAME.
-  - Intertechno_V3: bespoke framing (two H-L pairs per bit, 5:1 ratio, dimming
-    symbol) — not a PWM 2:1/3:1 template.
-  - Dooya: header 9.16-9.53 ms, below the 10 ms stop-threshold (same short-guard
-    class as SMC5326).
+  - Chamberlain_code: bespoke trinary (4-bit packed symbols STOP/0/1, ~4 ms
+    pulse-position pairs, three dip variants 7/8/9 with mask repacking and a
+    variable-width key, plus a bit-array encoder) — implementable but deserves a
+    focused step; not yet done.
+  - Intertechno_V3 36-bit dimming sub-variant (the 32-bit variant is supported).
   - Marantec: Manchester encoding (not PWM) and a header of exactly ~10 ms.
-  - Megacode / Magellan: bespoke framing (6 ms pulse-position slot; short-pulse
-    preamble + CRC8) — would need dedicated decoders, deferred.
+  - Megacode: bespoke framing (pulse-position slot with in-bit low gaps up to
+    ~8 ms, which exceed the 6 ms frame-gap and collide with SMC5326's 7.2 ms
+    inter-frame gap — no single threshold serves both) — dropped for whole-frame.

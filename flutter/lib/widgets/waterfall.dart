@@ -246,21 +246,27 @@ class _WaterfallViewState extends State<WaterfallView>
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _WaterfallPainter(
-        repaint: _repaint,
-        img: _img,
-        markers: widget.markers,
-        bins: widget.bins,
-        maxRows: widget.maxRows,
-        markerColor: widget.markerColor,
-        bg: widget.background,
-        smooth: widget.smooth,
-        lastRowAtMs: _lastRowAtMs,
-        rowIntervalMs: _rowIntervalMs,
-        nowMs: _nowMs,
+    // The painter repaints at ~60 fps via [_repaint]; the RepaintBoundary
+    // confines that to this layer so the surrounding chrome/cards don't
+    // re-raster each frame (and a page transition composites it as a cached
+    // texture instead of repainting it into a saveLayer).
+    return RepaintBoundary(
+      child: CustomPaint(
+        painter: _WaterfallPainter(
+          repaint: _repaint,
+          img: _img,
+          markers: widget.markers,
+          bins: widget.bins,
+          maxRows: widget.maxRows,
+          markerColor: widget.markerColor,
+          bg: widget.background,
+          smooth: widget.smooth,
+          lastRowAtMs: _lastRowAtMs,
+          rowIntervalMs: _rowIntervalMs,
+          nowMs: _nowMs,
+        ),
+        child: const SizedBox.expand(),
       ),
-      child: const SizedBox.expand(),
     );
   }
 }
@@ -505,26 +511,30 @@ class _SpectrumStripState extends State<SpectrumStrip>
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _StripPainter(
-        _repaint,
-        widget.values,
-        widget.rev,
-        widget.accent,
-        widget.markers,
-        widget.valid,
-        widget.averageValues,
-        widget.averageValid,
-        widget.averageColor,
-        widget.markerColor,
-        widget.showGrid,
-        widget.linearTrace,
-        widget.stepped,
-        widget.bridgeGaps,
-        widget.maxHold ? _hold : const [],
-        widget.holdColor ?? Color.lerp(widget.accent, Colors.white, 0.65)!,
+    // Isolate the strip's repaints (continuous while max-hold decays) from the
+    // surrounding layer — same reason as the waterfall above.
+    return RepaintBoundary(
+      child: CustomPaint(
+        painter: _StripPainter(
+          _repaint,
+          widget.values,
+          widget.rev,
+          widget.accent,
+          widget.markers,
+          widget.valid,
+          widget.averageValues,
+          widget.averageValid,
+          widget.averageColor,
+          widget.markerColor,
+          widget.showGrid,
+          widget.linearTrace,
+          widget.stepped,
+          widget.bridgeGaps,
+          widget.maxHold ? _hold : const [],
+          widget.holdColor ?? Color.lerp(widget.accent, Colors.white, 0.65)!,
+        ),
+        child: const SizedBox.expand(),
       ),
-      child: const SizedBox.expand(),
     );
   }
 }

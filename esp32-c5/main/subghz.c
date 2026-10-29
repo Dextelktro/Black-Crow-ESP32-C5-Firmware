@@ -40,27 +40,45 @@
 #define SUBGHZ_SPEC_MIN_SPAN   100000UL
 #define SUBGHZ_SPEC_MAX_SPAN   20000000UL
 #define SUBGHZ_RSSI_FLOOR      (-128)
-/* Frequency analyzer, ported faithfully from Flipper's
- * subghz_frequency_analyzer_worker.c: a -93 dBm trigger, a wide coarse hop then
- * a narrow ±300 kHz / 20 kHz fine scan. The narrow fine bandwidth is what both
- * resolves the carrier and rejects noise, so no extra sideband-margin test is
- * needed (that only added latency and could drop weak real signals). */
-#define SUBGHZ_ANALYZER_MIN_RSSI (-93)   /* SUBGHZ_FREQUENCY_ANALYZER_THRESHOLD */
+/* Frequency analyzer — matched to Flipper Unleashed's analyzer plugin
+ * (applications/main/subghz/plugins/frequency_analyzer/...worker.c). Flipper does
+ * NOT use a fixed absolute threshold; it compares RSSI against a USER-ADJUSTABLE
+ * trigger level (its on-screen bar), because the true noise floor is hardware-
+ * and environment-dependent. Our earlier fixed −93 dBm (and the relative-floor
+ * patch over it) is exactly why noise was reported as a signal. Algorithm:
+ *   - COARSE: hop the band list at 650 kHz, keep the strongest frequency;
+ *   - if coarse peak > trigger, FINE scan ±300 kHz / 20 kHz at 58 kHz to confirm;
+ *   - detection only when the FINE peak > trigger;
+ *   - a hold counter keeps the last hit for a few scans, then the display is
+ *     zeroed — the "shows 0, then the frequency, then back to 0" behaviour. */
+#define SUBGHZ_ANALYZER_DEFAULT_TRIGGER (-80)  /* dBm; fallback if auto-cal can't run */
+#define SUBGHZ_ANALYZER_TRIGGER_MIN (-110)
+#define SUBGHZ_ANALYZER_TRIGGER_MAX (0)
+/* Auto-calibration: at analyzer start the band noise floor is measured and the
+ * trigger set this many dB above it, so noise is rejected regardless of the
+ * hardware/environment floor while a real carrier (tens of dB above the floor)
+ * still passes. Floor and the coarse detection compare at the SAME (wide)
+ * bandwidth, and a carrier's level is bandwidth-independent, so the margin means
+ * the same thing for both stages (avoids the earlier BW-mismatch bug). */
+#define SUBGHZ_ANALYZER_AUTOCAL_MARGIN_DB 12
+#define SUBGHZ_ANALYZER_AUTOCAL_MIN_SAMPLES 3
 #define SUBGHZ_ANALYZER_REFINE_RADIUS_HZ 300000
 #define SUBGHZ_ANALYZER_REFINE_STEP_HZ   20000
-/* A real carrier stands well ABOVE the band noise floor. The absolute -93 dBm
- * trigger alone is only robust when the hardware/environment floor sits far
- * below it; on a noisier floor it fires on noise (phantom detections). So the
- * fine peak must ALSO clear the measured band floor by this margin. The floor
- * is taken from the coarse sweep already performed, so this costs no extra
- * scan time. A band-wide elevated floor (wideband noise, no local carrier)
- * raises peak and floor together and is correctly rejected. */
-#define SUBGHZ_ANALYZER_MIN_MARGIN_DB 8
-#define SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES 3  /* need this many valid coarse hops */
+#define SUBGHZ_ANALYZER_HOLD_CYCLES 20   /* Flipper sample_hold_counter: keep the
+                                          * last detection this many empty scans */
 /* RX bandwidth (MDMCFG4) for the two stages, verbatim from Flipper: wide for the
  * coarse hop, narrow for the fine scan. */
 #define SUBGHZ_ANALYZER_BW_COARSE 0x17   /* 650 kHz (0b00010111) */
 #define SUBGHZ_ANALYZER_BW_FINE   0xF7   /* 58 kHz  (0b11110111) */
+/* Flipper's analyzer-specific AGC / modem overrides, applied ON TOP of the OOK
+ * base preset so the RSSI the trigger is compared against behaves the same way
+ * it does on Flipper — instead of the Read RX preset's hotter AGC, which drove
+ * the noise floor up and made everything look like a signal. Values are verbatim
+ * from the analyzer worker's register writes. */
+#define SUBGHZ_ANALYZER_AGCCTRL2 0x07   /* MAGN_TARGET 42 dB                  */
+#define SUBGHZ_ANALYZER_AGCCTRL1 0x08   /* absolute carrier-sense threshold off */
+#define SUBGHZ_ANALYZER_AGCCTRL0 0x30   /* 64-sample AGC filter               */
+#define SUBGHZ_ANALYZER_MDMCFG3  0x7F   /* symbol rate (DRATE_M)              */
 
 /* Read RAW */
 #define SUBGHZ_RAW_CHUNK        16     /* durations per RAWBIN line (fits 256B) */
@@ -120,6 +138,11 @@ static volatile bool s_worker_alive;   /* authoritative "worker task exists" */
 static uint32_t s_spec_center;
 static uint32_t s_spec_span;
 static int s_spec_bins;
+
+/* Frequency-analyzer state */
+static volatile int s_analyzer_trigger = SUBGHZ_ANALYZER_DEFAULT_TRIGGER;
+static int s_analyzer_hold;        /* scans left to keep showing the last hit */
+static uint32_t s_analyzer_last_fq; /* last detected freq, held during s_analyzer_hold */
 
 /* Read RAW state */
 static volatile int s_rssi_threshold = SUBGHZ_DEFAULT_RSSI_THR;
@@ -523,35 +546,85 @@ static void analyzer_set_bandwidth(uint8_t mdmcfg4)
     (void)cc1101_write_reg(CC1101_MDMCFG4, mdmcfg4);
 }
 
-static void analyzer_scan(void)
+/* Measure the band noise floor (one coarse sweep) and set the analyzer trigger a
+ * fixed margin above it. This is what makes "detect the signal, not the noise"
+ * robust without a hand-tuned threshold: it adapts to whatever the real floor is
+ * on this board/antenna/environment. A real remote sits far above the floor, so
+ * the margin never masks it. Runs once at analyzer start; the user can still
+ * override afterwards with `subghz analyzer trigger <dbm>` (the app slider),
+ * which holds until the next start. */
+static void analyzer_autocal(void)
 {
-    /* COARSE: wide 650 kHz, hop the band list, find the strongest frequency.
-     * Keep every sample so the band noise floor can be estimated from them. */
     analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_COARSE);
-    int peak = SUBGHZ_RSSI_FLOOR;
-    uint32_t peakfq = 0;
-    int coarse[SUBGHZ_HOP_N];
-    size_t coarse_n = 0;
+    int samples[SUBGHZ_HOP_N];
+    size_t n = 0;
     for (size_t i = 0; i < SUBGHZ_HOP_N && s_run; i++) {
         int r = measure_rssi_fast(s_hoplist[i]);
-        coarse[coarse_n++] = r;
-        if (r > peak) { peak = r; peakfq = s_hoplist[i]; }
+        if (r > SUBGHZ_RSSI_FLOOR) samples[n++] = r;
+    }
+    if (!s_run || n < SUBGHZ_ANALYZER_AUTOCAL_MIN_SAMPLES) return;  /* keep current */
+    for (size_t i = 1; i < n; i++) {   /* insertion sort for the median */
+        int v = samples[i];
+        size_t j = i;
+        while (j > 0 && samples[j - 1] > v) { samples[j] = samples[j - 1]; j--; }
+        samples[j] = v;
+    }
+    int floor_dbm = samples[n / 2];
+    int t = floor_dbm + SUBGHZ_ANALYZER_AUTOCAL_MARGIN_DB;
+    if (t < SUBGHZ_ANALYZER_TRIGGER_MIN) t = SUBGHZ_ANALYZER_TRIGGER_MIN;
+    if (t > SUBGHZ_ANALYZER_TRIGGER_MAX) t = SUBGHZ_ANALYZER_TRIGGER_MAX;
+    s_analyzer_trigger = t;
+    io_log("subghz: ANALYZER_TRIG %d (auto floor=%d)\r\n", t, floor_dbm);
+}
+
+/* Emit a "no detection this scan", but ALWAYS report the live measured band
+ * level (coarse peak) so the app's RSSI bar shows the real noise floor — that is
+ * what lets the user set the trigger above it (Flipper's live feedback bar).
+ * During the hold window (Flipper's sample_hold_counter) the last detected
+ * frequency is kept on screen so a brief dropout between repeated frames does
+ * not flicker it to 0; once the hold expires the frequency drops to 0 while the
+ * level keeps updating. `level` is the coarse peak in dBm (or RSSI_FLOOR). */
+static void analyzer_emit_level(int level)
+{
+    if (s_analyzer_hold > 0) {
+        s_analyzer_hold--;
+        io_log("subghz: ANALYZER peakfq=%lu rssi=%d\r\n",
+               (unsigned long)s_analyzer_last_fq, level);
+        return;
+    }
+    io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", level);
+}
+
+static void analyzer_scan(void)
+{
+    int trigger = s_analyzer_trigger;
+
+    /* COARSE: wide 650 kHz, hop the band list, keep the strongest frequency. */
+    analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_COARSE);
+    int coarse_peak = SUBGHZ_RSSI_FLOOR;
+    uint32_t coarse_fq = 0;
+    for (size_t i = 0; i < SUBGHZ_HOP_N && s_run; i++) {
+        int r = measure_rssi_fast(s_hoplist[i]);
+        if (r > coarse_peak) { coarse_peak = r; coarse_fq = s_hoplist[i]; }
     }
     if (!s_run) return;
-    if (peak < SUBGHZ_ANALYZER_MIN_RSSI || peakfq == 0) {
-        io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
+
+    /* Only bother with the fine scan if the coarse peak already beats the
+     * trigger (Flipper: `if (frequency_rssi.rssi_coarse > trigger_level)`). */
+    if (coarse_peak <= trigger || coarse_fq == 0) {
+        analyzer_emit_level(coarse_peak);
         return;
     }
 
     /* FINE: narrow 58 kHz, scan ±300 kHz / 20 kHz around the coarse peak. The
-     * narrow bandwidth resolves the carrier and rejects wideband noise. */
+     * narrow bandwidth resolves the carrier; the trigger rejects noise. */
     analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_FINE);
     int fine_peak = SUBGHZ_RSSI_FLOOR;
-    uint32_t fine_fq = peakfq;
+    uint32_t fine_fq = coarse_fq;
     for (int32_t offset = -SUBGHZ_ANALYZER_REFINE_RADIUS_HZ;
          offset <= SUBGHZ_ANALYZER_REFINE_RADIUS_HZ && s_run;
          offset += SUBGHZ_ANALYZER_REFINE_STEP_HZ) {
-        int64_t candidate = (int64_t)peakfq + offset;
+        int64_t candidate = (int64_t)coarse_fq + offset;
         if (candidate < 0 || !subghz_frequency_valid((uint32_t)candidate)) {
             continue;
         }
@@ -564,38 +637,15 @@ static void analyzer_scan(void)
     analyzer_set_bandwidth(SUBGHZ_ANALYZER_BW_COARSE);   /* restore for next pass */
     if (!s_run) return;
 
-    /* The narrow fine scan must ALSO clear the absolute threshold; if it does
-     * not, the wide coarse hit was noise spread across the band, not a carrier. */
-    if (fine_peak < SUBGHZ_ANALYZER_MIN_RSSI) {
-        io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
+    /* Detection requires the fine peak to beat the trigger too — the user sets
+     * the trigger above their own noise floor (Flipper's on-screen bar). */
+    if (fine_peak <= trigger) {
+        analyzer_emit_level(coarse_peak);
         return;
     }
 
-    /* Relative gate: the peak must also rise clearly above the band noise floor.
-     * Estimate the floor as the median of the coarse samples (excluding failed
-     * reads); a lone real carrier barely moves the median, so the margin stays
-     * large for a true signal and ~0 for a uniformly noisy band. Only applied
-     * when enough valid samples exist — otherwise fall back to the absolute
-     * threshold rather than reject on a floor we could not measure. */
-    int valid[SUBGHZ_HOP_N];
-    size_t valid_n = 0;
-    for (size_t i = 0; i < coarse_n; i++) {
-        if (coarse[i] > SUBGHZ_RSSI_FLOOR) valid[valid_n++] = coarse[i];
-    }
-    if (valid_n >= SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES) {
-        for (size_t i = 1; i < valid_n; i++) {   /* insertion sort (small n) */
-            int v = valid[i];
-            size_t j = i;
-            while (j > 0 && valid[j - 1] > v) { valid[j] = valid[j - 1]; j--; }
-            valid[j] = v;
-        }
-        int floor_dbm = valid[valid_n / 2];
-        if (fine_peak - floor_dbm < SUBGHZ_ANALYZER_MIN_MARGIN_DB) {
-            io_log("subghz: ANALYZER peakfq=0 rssi=%d\r\n", SUBGHZ_RSSI_FLOOR);
-            return;
-        }
-    }
-
+    s_analyzer_hold = SUBGHZ_ANALYZER_HOLD_CYCLES;
+    s_analyzer_last_fq = fine_fq;
     io_log("subghz: ANALYZER peakfq=%lu rssi=%d\r\n",
            (unsigned long)fine_fq, fine_peak);
 }
@@ -780,7 +830,12 @@ static void raw_capture_cb(const int32_t *durations, size_t count,
         xSemaphoreGive(s_lock);
     } else {
         io_log("subghz: ERR capture-lock\r\n");
-        if (strict_raw) emit_raw_capture = false;
+        /* The lock failed, so this frame was NOT appended to the recording
+         * (s_raw_last). Suppress its telemetry too for BOTH RAW modes — strict
+         * and the continuous recorder — otherwise the live stream would show a
+         * frame that a later save/transmit of the recording does not contain
+         * (the stored recording would silently diverge from what was seen). */
+        if (!read_mode) emit_raw_capture = false;
     }
 
     if (read_mode) {
@@ -1068,13 +1123,24 @@ static void subghz_worker(void *arg)
 
     bool spectrum = (mode == SUBGHZ_MODE_SPECTRUM);
     if (!spectrum) {
-        /* Force the analyzer into a known AM / 650 kHz config (Flipper loads its
+        /* Force the analyzer into a known AM / 650 kHz base (Flipper loads its
          * own analyzer presets) so RSSI, AGC and bandwidth are consistent no
-         * matter which preset the user had selected. analyzer_scan then toggles
-         * MDMCFG4 between the coarse and fine bandwidths. */
+         * matter which preset the user had selected, then override the AGC/modem
+         * registers with Flipper's analyzer-specific values — the OOK650 Read
+         * preset's hotter AGC lifts the noise floor and makes noise read like a
+         * signal. analyzer_scan then toggles MDMCFG4 between coarse/fine BW. */
         (void)subghz_preset_apply(subghz_preset_get(SUBGHZ_PRESET_OOK_650));
+        (void)cc1101_write_reg(CC1101_AGCCTRL2, SUBGHZ_ANALYZER_AGCCTRL2);
+        (void)cc1101_write_reg(CC1101_AGCCTRL1, SUBGHZ_ANALYZER_AGCCTRL1);
+        (void)cc1101_write_reg(CC1101_AGCCTRL0, SUBGHZ_ANALYZER_AGCCTRL0);
+        (void)cc1101_write_reg(CC1101_MDMCFG3,  SUBGHZ_ANALYZER_MDMCFG3);
+        s_analyzer_hold = 0;   /* start cleared: first empty scan shows 0 */
+        s_analyzer_last_fq = 0;
     }
     io_log(spectrum ? "subghz: SPECTRUM START\r\n" : "subghz: ANALYZER START\r\n");
+    if (!spectrum && s_run) {
+        analyzer_autocal();   /* set the trigger from the measured noise floor */
+    }
     uint32_t seq = 0;
     while (s_run) {
         if (spectrum) spectrum_sweep(seq++);
@@ -1253,6 +1319,23 @@ void subghz_set_rssi_threshold(int dbm)
 int subghz_get_rssi_threshold(void)
 {
     return s_rssi_threshold;
+}
+
+/* Frequency-analyzer trigger level (dBm). This is the equivalent of Flipper's
+ * on-screen trigger bar: a detection is reported only when the measured RSSI
+ * beats it, so the user tunes it just above their own noise floor. Adjustable
+ * while the analyzer runs (volatile; read fresh each scan). */
+void subghz_set_analyzer_trigger(int dbm)
+{
+    if (dbm < SUBGHZ_ANALYZER_TRIGGER_MIN) dbm = SUBGHZ_ANALYZER_TRIGGER_MIN;
+    if (dbm > SUBGHZ_ANALYZER_TRIGGER_MAX) dbm = SUBGHZ_ANALYZER_TRIGGER_MAX;
+    s_analyzer_trigger = dbm;
+    io_log("subghz: ANALYZER_TRIG %d\r\n", dbm);
+}
+
+int subghz_get_analyzer_trigger(void)
+{
+    return s_analyzer_trigger;
 }
 
 /* Shared bring-up for capture-based modes (READ_RAW and READ): stop any

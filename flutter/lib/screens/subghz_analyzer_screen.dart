@@ -18,6 +18,8 @@ class SubghzAnalyzerScreen extends StatefulWidget {
 class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
   DeviceController? _ctrl;
   bool _sessionPrepared = false;
+  // Live draft while dragging the trigger slider (committed on release).
+  double? _triggerDraft;
 
   @override
   void didChangeDependencies() {
@@ -50,6 +52,7 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
     final history = ctrl.subghzAnalyzerHistory;
     final detections = ctrl.subghzAnalyzerDetections;
     final values = <double>[for (final r in history) sgRssiFraction(r)];
+    final trigger = _triggerDraft ?? ctrl.subghzAnalyzerTrigger.toDouble();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Frequency Analyzer')),
@@ -105,7 +108,48 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
                         inBand: true,
                       ),
                       const SizedBox(height: 14),
-                      _RssiBar(dbm: hasPeak ? ctrl.subghzAnalyzerRssi : -128),
+                      // Live level (noise floor when idle), always shown so the
+                      // trigger can be set above it.
+                      _RssiBar(dbm: ctrl.subghzAnalyzerRssi),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SgSectionLabel('DETECTION TRIGGER · ${trigger.round()} dBm'),
+                SgPanel(
+                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Slider(
+                        // Full firmware trigger range (SUBGHZ_ANALYZER_TRIGGER
+                        // MIN..MAX = -110..0 dBm). Auto-cal, or a noisy band,
+                        // can set the trigger above -40, so the slider must
+                        // reach the same ceiling or its knob would disagree
+                        // with the label and the user could not raise it.
+                        min: -110,
+                        max: 0,
+                        divisions: 110,
+                        value: trigger.clamp(-110, 0),
+                        label: '${trigger.round()} dBm',
+                        activeColor: kSgAmber,
+                        onChanged: (v) => setState(() => _triggerDraft = v),
+                        onChangeEnd: (v) {
+                          setState(() => _triggerDraft = v);
+                          ctrl.subghzSetAnalyzerTrigger(v.round());
+                        },
+                      ),
+                      const Text(
+                        'Auto-set just above the measured noise floor when the '
+                        'analyzer starts, so noise is ignored. Drag to override: '
+                        'raise it if noise still shows, lower it if a weak remote '
+                        'is missed. The bar above is the live level.',
+                        style: TextStyle(
+                          color: Colors.white38,
+                          fontSize: 11,
+                          height: 1.4,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -186,10 +230,10 @@ class _SubghzAnalyzerScreenState extends State<SubghzAnalyzerScreen> {
                 ),
                 const SizedBox(height: 14),
                 const Text(
-                  '25 kHz scan steps around representative candidates. Hold the '
-                  'transmitter active while scanning. RSSI peak is an estimate, '
-                  'not a calibrated carrier measurement; signals between '
-                  'candidates or close together may be missed or merged.',
+                  'Coarse hop at 650 kHz, then a 20 kHz fine scan around the '
+                  'peak. Hold the transmitter active while scanning. RSSI peak '
+                  'is an estimate, not a calibrated carrier measurement; signals '
+                  'between candidates or close together may be missed or merged.',
                   style: TextStyle(
                     color: Colors.white38,
                     fontSize: 11,

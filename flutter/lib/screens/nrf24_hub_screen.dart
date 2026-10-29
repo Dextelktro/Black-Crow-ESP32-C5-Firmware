@@ -37,7 +37,7 @@ class _Nrf24HubScreenState extends State<Nrf24HubScreen> {
 
   void _push(BuildContext context, DeviceController ctrl, Widget screen) {
     Navigator.of(context).push(
-      MaterialPageRoute(
+      AppPageRoute(
         builder: (_) =>
             ChangeNotifierProvider.value(value: ctrl, child: screen),
       ),

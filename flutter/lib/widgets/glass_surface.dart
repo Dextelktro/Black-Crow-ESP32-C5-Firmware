@@ -30,8 +30,8 @@ BoxDecoration glassSurfaceDecoration(
     boxShadow: [
       BoxShadow(
         color: Colors.black.withValues(alpha: 0.28),
-        blurRadius: 10,
-        offset: const Offset(0, 5),
+        blurRadius: 14,
+        offset: Offset.zero,
       ),
     ],
   );
@@ -135,28 +135,32 @@ class _GlassCardState extends State<GlassCard> {
         ? AppColors.accent.withValues(alpha: 0.45)
         : AppColors.border.withValues(alpha: 0.9);
 
-    // Soft lift + optional accent glow. Blur radii are kept deliberately small:
-    // a BoxShadow blur is a gaussian pass (the most expensive paint op), and
-    // these cards live in long scroll lists. Combined with the RepaintBoundary
-    // below, each card rasterizes once and scrolling just composites it.
+    // Soft ambient shadow + optional accent glow. Shadows are SYMMETRICAL
+    // (offset zero): Impeller's offset / non-symmetrical shadow path is markedly
+    // slower on Android (flutter#162312), while a centred halo still reads as
+    // depth together with the border + sheen. Blur stays small, and with the
+    // RepaintBoundary below each card rasterizes once and scrolling composites.
     final shadows = <BoxShadow>[
       BoxShadow(
         color: Colors.black.withValues(alpha: _pressed ? 0.22 : 0.30),
-        blurRadius: _pressed ? 6 : 10,
-        offset: Offset(0, _pressed ? 2 : 5),
+        blurRadius: _pressed ? 8 : 14,
+        offset: Offset.zero,
       ),
       if (widget.active && accent != null)
         BoxShadow(
           color: accent.withValues(alpha: 0.18),
           blurRadius: 14,
-          offset: const Offset(0, 3),
+          offset: Offset.zero,
         ),
     ];
 
     Widget card = RepaintBoundary(
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 130),
-        curve: Curves.easeOut,
+      // Plain Container, not AnimatedContainer: the press/active colour + border
+      // are recomputed on the setState rebuild already, so animating them added
+      // a second implicit AnimationController per card for no visible gain. The
+      // tactile press is the AnimatedScale below (one controller, only when
+      // interactive).
+      child: Container(
         padding: widget.padding,
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -192,44 +196,6 @@ class _GlassCardState extends State<GlassCard> {
         duration: const Duration(milliseconds: 130),
         curve: Curves.easeOut,
         child: card,
-      ),
-    );
-  }
-}
-
-/// Ambient background painted once behind every route (via MaterialApp.builder)
-/// so the translucent cards have real colour to reveal. Static gradients only.
-class AppBackground extends StatelessWidget {
-  const AppBackground({super.key, required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    if (!isDark) {
-      return ColoredBox(color: const Color(0xFFF4F7F5), child: child);
-    }
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: AppColors.bg,
-        gradient: RadialGradient(
-          center: Alignment(-0.75, -0.95),
-          radius: 1.35,
-          colors: [Color(0x1842D9C3), Color(0x0042D9C3)],
-          stops: [0.0, 0.72],
-        ),
-      ),
-      child: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: RadialGradient(
-            center: Alignment(0.95, 0.85),
-            radius: 1.25,
-            colors: [Color(0x14123A33), Color(0x00000000)],
-            stops: [0.0, 0.7],
-          ),
-        ),
-        child: child,
       ),
     );
   }

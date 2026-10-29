@@ -1,12 +1,12 @@
 {
-  "firmwareVersion": "BCfw-v0.1.0 · app-v1.0.0",
+  "firmwareVersion": "BCfw-v0.1.1 · app-v1.0.0+2",
   "chip": "esp32c5",
   "flashOffsets": { "bootloader": "0x2000", "partitionTable": "0x8000", "application": "0x10000" },
   "app": {
-    "version": "app-v1.0.0",
+    "version": "app-v1.0.0+2",
     "platform": "Android",
     "file": "app/black-crow-app.apk",
-    "size": 56878111
+    "size": 56697923
   },
   "boards": {
     "devkit": {

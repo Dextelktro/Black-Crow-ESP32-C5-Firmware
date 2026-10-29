@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
 
 /// Shared visual kit for the Sub-GHz (CC1101) toolkit. Its identity is a warm
 /// "analog tuning dial": amber/gold on a deep ember-black, a horizontal
@@ -61,7 +62,7 @@ double sgRssiFraction(int dbm) => ((dbm + 110) / 80.0).clamp(0.0, 1.0);
 /// flutter-provider route pattern).
 void pushSubghz(BuildContext context, DeviceController ctrl, Widget screen) {
   Navigator.of(context).push(
-    MaterialPageRoute(
+    AppPageRoute(
       builder: (_) => ChangeNotifierProvider.value(value: ctrl, child: screen),
     ),
   );

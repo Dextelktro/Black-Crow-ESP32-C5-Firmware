@@ -120,6 +120,54 @@ class _SubghzReadRawScreenState extends State<SubghzReadRawScreen> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 10),
+                SgButton(
+                  label: 'DIAGNOSTICS',
+                  icon: Icons.insights,
+                  filled: false,
+                  onPressed: () => ctrl.subghzReadRawStats(),
+                ),
+                if (ctrl.subghzRawStats != null) ...[
+                  const SizedBox(height: 8),
+                  SgPanel(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'CAPTURE STATS',
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontSize: 10,
+                            letterSpacing: 1.2,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        SelectableText(
+                          ctrl.subghzRawStats!,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11.5,
+                            fontFamily: 'monospace',
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'rx_sym=0 → GDO0/wiring · trunc high + frames≈0 → '
+                          'noisy band · frames>0 + squelch=0 → raise the RSSI '
+                          'threshold · last_rssi is the live level.',
+                          style: TextStyle(
+                            color: Colors.white38,
+                            fontSize: 10.5,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 18),
                 Row(
                   children: [

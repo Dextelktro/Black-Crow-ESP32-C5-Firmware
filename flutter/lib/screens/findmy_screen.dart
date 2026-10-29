@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
 
 const _kFindMyAccent = Color(0xFF8EA6FF);
 
@@ -89,7 +90,7 @@ class _FindMyScreenState extends State<FindMyScreen> {
     final ctrl = _ctrl;
     if (ctrl == null) return;
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
+      AppPageRoute<void>(
         builder: (_) => ChangeNotifierProvider.value(
           value: ctrl,
           child: FindMyMonitorScreen(device: device),

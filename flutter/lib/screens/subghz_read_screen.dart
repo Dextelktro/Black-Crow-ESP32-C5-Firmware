@@ -188,7 +188,7 @@ class _DecodedCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                known ? d.proto : 'Unknown',
+                known ? sgProtoDisplay(d.proto) : 'Unknown',
                 style: TextStyle(
                   color: known ? Colors.white : Colors.white54,
                   fontSize: 15,

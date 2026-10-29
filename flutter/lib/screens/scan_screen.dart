@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import '../services/api_server.dart';
 import '../services/device_controller.dart';
 import '../services/nus_client.dart';
+import '../theme/app_theme.dart';
 import 'device_screen.dart';
 import 'settings_screen.dart';
 
@@ -217,7 +218,7 @@ class _ScanScreenState extends State<ScanScreen> {
       Navigator.of(context).pop(); // dismiss spinner
       dialogVisible = false;
       await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => DeviceScreen(controller: controller!)),
+        AppPageRoute(builder: (_) => DeviceScreen(controller: controller!)),
       );
       // Await the full BLE teardown so the ESP32 receives a clean disconnect
       // and restarts advertising before we scan again.
@@ -273,7 +274,7 @@ class _ScanScreenState extends State<ScanScreen> {
             onSelected: (value) {
               if (value == 'settings') {
                 Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  AppPageRoute(builder: (_) => const SettingsScreen()),
                 );
               }
             },

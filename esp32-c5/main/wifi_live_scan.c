@@ -80,6 +80,16 @@ static target_ap_t *s_target_snapshot;
 static TaskHandle_t  s_task = NULL;
 static volatile bool s_running = false;
 static volatile bool s_stop_requested = false;
+/* True while a one-shot wifi_live_scan_snapshot() is sweeping on another task
+ * and owns [s_tbl]; wifi_live_scan_start() checks this and refuses rather than
+ * freeing the table out from under it. */
+static volatile bool s_snapshot_active = false;
+/* True for the whole of wifi_live_scan_start() — from before it tears down any
+ * previous run until the fresh scan is live — so a snapshot that races it sees
+ * the claim and refuses instead of allocating/freeing s_tbl underneath it. All
+ * three ownership flags are tested-and-set together under s_mux; because the
+ * chip is single-core, that critical section is a true atomic claim. */
+static volatile bool s_start_active = false;
 
 static wlscan_mode_t    s_mode = WLSCAN_MODE_FAST;
 static uint32_t         s_duration_sec = 0;
@@ -555,6 +565,88 @@ esp_err_t wifi_live_scan_init(void)
     return ESP_OK;
 }
 
+/* One-shot passive sweep used by the Network Target screen (the `scan`
+ * command). Same radio path as the continuous live scan — hop each channel in
+ * promiscuous mode, let the RX callback record the beacons / probe-responses it
+ * hears — but bounded and SILENT: it runs a fixed number of sweeps, emits no
+ * NEW/UPD/GONE/AIR telemetry, and mirrors the captured table into the shared
+ * `targets` list exactly once. That gives the one-shot scan reliable 5 GHz
+ * discovery under BLE coexistence while leaving its wire protocol and the
+ * monitor/select/deauth flow (all of which read the target table) unchanged. */
+int wifi_live_scan_snapshot(bool include_5g, int passes, uint32_t dwell_ms,
+                            volatile bool *stop_flag)
+{
+    if (!s_target_snapshot) return -1;   /* wifi_live_scan_init() not run */
+
+    /* Atomically claim the shared table/radio. Refuse if the continuous live
+     * scan owns it (already running, or mid-start) or another snapshot is in
+     * flight. Testing the guards and setting s_snapshot_active in one critical
+     * section closes the race with wifi_live_scan_start(): otherwise both could
+     * pass their checks and then each alloc/free s_tbl — a double free plus a
+     * use-after-free in the RX callback. Cleared on every exit path below. */
+    portENTER_CRITICAL(&s_mux);
+    if (s_running || s_start_active || s_snapshot_active) {
+        portEXIT_CRITICAL(&s_mux);
+        return -3;                       /* busy: another owner holds the radio */
+    }
+    s_snapshot_active = true;
+    portEXIT_CRITICAL(&s_mux);
+
+    if (passes < 1) passes = 1;
+    if (dwell_ms == 0) dwell_ms = 120;
+
+    /* Reclaim a table left behind by a prior run whose callback detach failed. */
+    if (s_tbl) {
+        if (wl_promis_stop() != ESP_OK) { s_snapshot_active = false; return -1; }
+        wl_table_release();
+    }
+    s_tbl = heap_caps_calloc(WLSCAN_MAX_APS, sizeof(*s_tbl),
+                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_tbl) { s_snapshot_active = false; return -1; }
+
+    s_cur_band = 0;
+    s_5g_ok    = true;
+
+    if (wl_promis_start() != ESP_OK) {
+        wl_table_release();
+        s_snapshot_active = false;
+        return -1;
+    }
+
+    int ret = 0;   /* 0 = ok, -2 = aborted */
+    for (int pass = 0; pass < passes && ret == 0; pass++) {
+        for (int i = 0; i < (int)(sizeof(CH_24) / sizeof(CH_24[0])); i++) {
+            if (stop_flag && *stop_flag) { ret = -2; break; }
+            if (wl_tune(CH_24[i])) vTaskDelay(pdMS_TO_TICKS(dwell_ms));
+        }
+        if (ret == 0 && include_5g && s_5g_ok) {
+            for (int i = 0; i < (int)(sizeof(CH_5) / sizeof(CH_5[0])); i++) {
+                if (stop_flag && *stop_flag) { ret = -2; break; }
+                if (wl_tune(CH_5[i])) vTaskDelay(pdMS_TO_TICKS(dwell_ms));
+                else if (!s_5g_ok) break;   /* 5 GHz radio refused — stop */
+            }
+        }
+    }
+
+    int count = 0;
+    if (ret == 0) {
+        wl_sync_targets();          /* mirror into the shared target table */
+        count = wl_used_count();
+    }
+
+    /* Detach the capture callback, then free the table. If the detach fails,
+     * keep the table (the callback may still fire) — the next snapshot or live
+     * scan start retries the detach and releases it. Promiscuous stays ON, as
+     * the rest of the firmware's TX path requires. */
+    if (wl_promis_stop() == ESP_OK) {
+        wl_table_release();
+    }
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+
+    s_snapshot_active = false;
+    return (ret == -2) ? -2 : count;
+}
+
 esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
                                uint32_t interval_ms,
                                uint32_t duration_sec)
@@ -562,6 +654,30 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
     (void)interval_ms;   /* continuous capture — no inter-cycle delay */
 
     if (!s_target_snapshot) return ESP_ERR_INVALID_STATE;
+
+    /* Atomically claim the start path under s_mux. Refuse if a one-shot snapshot
+     * owns the shared table on another task, or another start is already in
+     * flight; otherwise set s_start_active so a snapshot that races us from here
+     * on sees the claim and refuses rather than freeing s_tbl while we rebuild
+     * it. was_running is read under the same lock so the decision is consistent
+     * with the claim. s_start_active stays set until the fresh scan is live (the
+     * `done` label below), giving continuous coverage: s_start_active hands off
+     * to s_running with no window in which both are clear. The CLI serializes
+     * these commands too, but this keeps the module self-consistent for any
+     * non-CLI caller (e.g. an attack-driven rescan via wifi_ctrl_scan()). */
+    bool was_running = false;
+    portENTER_CRITICAL(&s_mux);
+    if (s_snapshot_active || s_start_active) {
+        portEXIT_CRITICAL(&s_mux);
+        io_log("wlscan: busy, one-shot scan in progress\r\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_start_active = true;
+    was_running = s_running;
+    portEXIT_CRITICAL(&s_mux);
+
+    esp_err_t result = ESP_OK;
+    BaseType_t ok = pdPASS;
 
     /* A start request always means "give me a fresh scan". If a previous run is
      * still alive — the client re-opened the screen, reconnected over BLE, or an
@@ -571,7 +687,7 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
      * a bare refusal would leave it stuck on an empty, forever-"scanning" list
      * while this task keeps running but never re-announces the APs it already
      * reported. */
-    if (s_running) {
+    if (was_running) {
         wifi_live_scan_stop();          /* sets stop flag, waits up to ~2 s */
     }
     /* Wait out any in-flight teardown: the task clears s_task last (after
@@ -582,14 +698,16 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
     }
     if (s_task != NULL) {
         io_log("wlscan: busy, try again\r\n");
-        return ESP_ERR_INVALID_STATE;
+        result = ESP_ERR_INVALID_STATE;
+        goto done;
     }
     if (s_tbl) {
         esp_err_t detach_err = wl_promis_stop();
         if (detach_err != ESP_OK) {
             io_log("wlscan: previous Wi-Fi callback still active (%s)\r\n",
                    esp_err_to_name(detach_err));
-            return ESP_ERR_INVALID_STATE;
+            result = ESP_ERR_INVALID_STATE;
+            goto done;
         }
         wl_table_release();
     }
@@ -598,7 +716,8 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
                              MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!s_tbl) {
         io_log("wlscan: internal AP table allocation failed\r\n");
-        return ESP_ERR_NO_MEM;
+        result = ESP_ERR_NO_MEM;
+        goto done;
     }
 
     if (duration_sec > 3600) duration_sec = 3600;
@@ -606,9 +725,9 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
     s_mode           = mode;
     s_duration_sec   = duration_sec;
     s_stop_requested = false;
-    s_running        = true;
+    s_running        = true;         /* claim handed from s_start_active to here */
 
-    BaseType_t ok = xTaskCreate(wlscan_task, "wlscan", 6144, NULL, 3, &s_task);
+    ok = xTaskCreate(wlscan_task, "wlscan", 6144, NULL, 3, &s_task);
     if (ok != pdPASS) {
         s_running = false;
         s_task = NULL;
@@ -616,9 +735,13 @@ esp_err_t wifi_live_scan_start(wlscan_mode_t mode,
         s_tbl = NULL;
         /* Terminal line so the app clears its optimistic running state. */
         io_log("wlscan: STOPPED cycles=0 unique=0\r\n");
-        return ESP_ERR_NO_MEM;
+        result = ESP_ERR_NO_MEM;
+        goto done;
     }
-    return ESP_OK;
+
+done:
+    s_start_active = false;
+    return result;
 }
 
 esp_err_t wifi_live_scan_stop(void)

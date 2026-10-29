@@ -40,24 +40,16 @@ def rssi_recently_qualified(seen_above, last_above_ms, now_ms,
         return True
     return seen_above and now_ms - last_above_ms <= hold_ms
 
-def analyzer_accept(coarse_peak, fine_peak, coarse_samples=None):
-    """Mirror the analyzer gate: the wide coarse hop AND the narrow fine scan
-    must both clear the absolute -93 dBm threshold, AND the fine peak must rise a
-    margin above the band noise floor (median of the coarse-sweep samples). The
-    floor gate REUSES the coarse sweep, so it adds no scan time; it replaces the
-    slow extra sideband scans (NOISE_NEAR/FAR) that were removed, and restores
-    robustness against a hardware/environment floor the fixed -93 dBm cannot
-    cover on its own (the cause of phantom detections)."""
-    minimum_rssi = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_RSSI")
-    margin = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_MARGIN_DB")
-    min_floor = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES")
-    if coarse_peak < minimum_rssi or fine_peak < minimum_rssi:
-        return False
-    if coarse_samples is not None:
-        valid = sorted(s for s in coarse_samples if s > -128)
-        if len(valid) >= min_floor and fine_peak - valid[len(valid) // 2] < margin:
-            return False   # peak does not stand out from the band floor -> noise
-    return True
+def analyzer_accept(coarse_peak, fine_peak, trigger=None):
+    """Mirror the Flipper-faithful analyzer gate (analyzer_scan in subghz.c): a
+    detection is reported only when the COARSE peak beats the user trigger AND
+    the narrow FINE peak also beats it. There is no fixed absolute threshold and
+    no relative noise-floor margin — the trigger is the single, user-adjustable
+    gate (Flipper's on-screen bar), which is what makes noise rejection robust
+    across hardware. `trigger` defaults to the firmware default."""
+    if trigger is None:
+        trigger = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_DEFAULT_TRIGGER")
+    return coarse_peak > trigger and fine_peak > trigger
 
 def repair_short_glitches(durations, min_us=50):
     """Mirror the decoder-only cleanup: absorb a short interior pulse between
@@ -235,6 +227,98 @@ def decode_linear(d):
     r = decode_phf(d, 500, 1500, 350, 350, 2500, 10)
     return ("Linear", r[0] & 0x3FF, 10) if r else None
 
+def decode_smc5326(d):     # 25-bit HIGH-first 3:1 + lone trailing stop high
+    if len(d) < 2 or d[-1] <= 0 or not within(d[-1], 300, 200): return None
+    r = decode_phf(d[:-1], 300, 900, 200, 200, 1800, 25)
+    return ("SMC5326", r[0] & 0x1FFFFFF, 25) if r else None
+
+def decode_dooya(d):       # start H4758 + L1466 preamble, then 40 HIGH-first 2:1 bits
+    if len(d) < 4 or d[0] <= 0 or not within(d[0], 4758, 600): return None
+    if d[1] >= 0 or not within(-d[1], 1466, 360): return None
+    r = decode_phf(d[2:], 366, 733, 120, 240, 2932, 40)
+    return ("Dooya", r[0] & 0xFFFFFFFFFF, 40) if r else None
+
+def magellan_crc8(data):   # poly 0x31, init 0x00, MSB-first
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x31) & 0xFF if (crc & 0x80) else (crc << 1) & 0xFF
+    return crc
+
+def decode_magellan(d):    # sync train + marker + start + 32 2:1 bits + stop high + CRC8
+    ts, tl, de = 200, 400, 100
+    n = len(d); i = 0
+    while i < n and not (d[i] > 0 and within(d[i], ts, de)): i += 1
+    header = 0; marker = False
+    while i + 1 < n:
+        if d[i] <= 0 or d[i+1] >= 0: return None
+        hi, lo = d[i], -d[i+1]
+        if within(hi, ts, de) and within(lo, ts, de): header += 1; i += 2; continue
+        if header > 10 and within(hi, ts, de) and within(lo, tl, de*2): i += 2; marker = True; break
+        return None
+    if not marker or i + 1 >= n: return None
+    if d[i] <= 0 or not within(d[i], ts*6, de*3): return None
+    if d[i+1] >= 0 or not within(-d[i+1], tl, de*2): return None
+    i += 2
+    data = 0; bits = 0
+    while i + 1 < n and bits < 32:
+        if d[i] <= 0 or d[i+1] >= 0: return None
+        hi, lo = d[i], -d[i+1]
+        if within(hi, ts, de) and within(lo, tl, de): bit = 1
+        elif within(hi, tl, de) and within(lo, ts, de): bit = 0
+        else: return None
+        data = (data << 1) | bit; bits += 1; i += 2
+    if bits != 32 or i >= n or d[i] <= 0 or not within(d[i], ts, de) or i + 1 != n: return None
+    if (data & 0xFF) != magellan_crc8([(data>>24)&0xFF, (data>>16)&0xFF, (data>>8)&0xFF]): return None
+    return ("Magellan", data & 0xFFFFFFFF, 32)
+
+def decode_intertechno(d):   # [short H][2750 L] + 32 bits, two (short H, L) pairs each
+    ts, tl, de = 275, 1375, 150
+    n = len(d)
+    if n < 4 or d[0] <= 0 or not within(d[0], ts, de): return None
+    if d[1] >= 0 or not within(-d[1], 2750, de*3): return None
+    data = 0; bits = 0; i = 2
+    while bits < 32:
+        if i + 2 >= n: return None                      # need [H][L1][H]
+        if d[i] <= 0 or not within(d[i], ts, de): return None
+        if d[i+1] >= 0: return None
+        if d[i+2] <= 0 or not within(d[i+2], ts, de): return None
+        l1 = -d[i+1]
+        if within(l1, tl, de*2): bit = 1
+        elif within(l1, ts, de): bit = 0
+        else: return None
+        data = (data << 1) | bit; bits += 1
+        if i + 3 < n and d[i+3] < 0:                     # complement L2 present
+            l2 = -d[i+3]
+            if (not within(l2, ts, de)) if bit else (not within(l2, tl, de*2)): return None
+            i += 4
+        elif bits == 32:
+            i += 3                                       # final bit: L2 trimmed by capture
+        else:
+            return None
+    if i == n or (i + 1 == n and d[i] > 0 and within(d[i], ts, de)):
+        return ("Intertechno_V3", data & 0xFFFFFFFF, 32)
+    return None
+
+def decode_princeton(d):   # 24-bit 3:1 H-L pairs (covers EV1527/PT2262/HS1527)
+    data = 0; bits = 0; te_ref = 0; i = 0; n = len(d)
+    while i + 1 < n and bits < 24:
+        hi, lo = d[i], d[i + 1]
+        if hi <= 0 or lo >= 0: break
+        ha, la = hi, -lo
+        mn, mx = min(ha, la), max(ha, la)
+        if mn < 80 or mn > 2000: break
+        if mx < mn * 2 + mn // 3 or mx > mn * 4: break   # ~3:1 ratio gate
+        if te_ref == 0:
+            te_ref = mn
+        else:
+            tol = te_ref // 3
+            if mn > te_ref + tol or mn < te_ref - tol: break
+        data = (data << 1) | (1 if ha > la else 0); bits += 1; i += 2
+    if bits != 24: return None
+    return ("Princeton", data & 0xFFFFFF, 24)
+
 def decode_pwm(d, sref, sdelta, ts, tl, dsh, dlo, inv):
     n = len(d)
     if n < 3 or d[0] <= 0 or not within(d[0], sref, sdelta): return None
@@ -255,10 +339,18 @@ def decode(d, fm=False):
         r = decode_pwm(d, 555, 120, 555, 1111, 120, 120, True)
         if r and r[1] == 12: return ("Ansonic", r[0], 12)
         return None
+    r = decode_smc5326(d)                                    # 25-bit + stop high (before Princeton)
+    if r: return r
+    r = decode_princeton(d)                                  # princeton/EV1527
+    if r: return r
     r = decode_linear(d)
     if r: return r
     r = decode_phf(d, 385, 2695, 150, 450, 4000, 18)         # clemsa
     if r: return ("Clemsa", r[0], 18)
+    r = decode_dooya(d)                                      # dooya (preamble-gated)
+    if r: return r
+    r = decode_intertechno(d)                                # intertechno (sync-gated)
+    if r: return r
     r = decode_pwm(d, 700, 300, 350, 700, 100, 300, False)   # gate_tx
     if r and r[1] == 24: return ("GateTX", r[0], 24)
     r = decode_pwm(d, 320, 150, 320, 640, 150, 150, False)   # came
@@ -269,6 +361,8 @@ def decode(d, fm=False):
     if r and r[1] == 37: return ("Doitrand", r[0], 37)
     r = decode_pwm(d, 2562, 400, 427, 853, 100, 300, True)   # phoenix_v2
     if r and r[1] == 52: return ("Phoenix_V2", r[0], 52)
+    r = decode_magellan(d)                                   # magellan (CRC-gated, last)
+    if r: return r
     return None
 
 # ---------- FULL on-air stream builders (Flipper rules, headers INCLUDED) ----------
@@ -316,6 +410,31 @@ def air_clemsa(key):                 # HIGH-first 7:1, 18 bits, trailer gap ~19-
     out += [2695, -(385 + 2695*7)] if (key & 1) else [385, -(2695*8)]
     return out
 
+def air_ev1527(key, te=350):         # EV1527/PT2262: 24-bit 3:1 H-L, sync = Te + 31*Te low
+    out = []
+    for i in range(23, -1, -1):
+        out += [te*3, -te] if (key >> i) & 1 else [te, -te*3]   # bit1 / bit0
+    out += [te, -(te*31)]            # sync bit; the 31*Te gap ends the frame
+    return out
+
+def mag_key(payload):                # 24-bit payload + CRC8 (low byte)
+    return (payload << 8) | magellan_crc8([(payload>>16)&0xFF, (payload>>8)&0xFF, payload&0xFF])
+
+def air_magellan(key):               # header + 12 sync + marker + start + 32 bits + stop + 40 ms sep
+    out = [800, -200]
+    for _ in range(12): out += [200, -200]
+    out += [200, -400, 1200, -400]
+    for i in range(31, -1, -1): out += [200, -400] if (key >> i) & 1 else [400, -200]
+    out += [200, -40000]             # stop high + inter-frame separator (ends reception)
+    return out
+
+def air_intertechno(key):            # header + 38*Te sep + sync (short + 10*Te) + 32 two-pair bits
+    ts, tl = 275, 1375
+    out = [ts, -(ts*38), ts, -(ts*10)]
+    for i in range(31, -1, -1):
+        out += [ts, -tl, ts, -ts] if (key >> i) & 1 else [ts, -ts, ts, -tl]
+    return out
+
 def jitter(seq, pct):
     return [int(round(abs(v)*(1+pct))) * (1 if v >= 0 else -1) for v in seq]
 
@@ -346,6 +465,16 @@ cases = [
     ("Doitrand 0x123456789", air_doitrand(0x123456789), False, ("Doitrand", 0x123456789, 37)),
     ("Phoenix_V2 0xABCDEF012345", air_phoenix(0xABCDEF012345), False, ("Phoenix_V2", 0xABCDEF012345, 52)),
     ("Clemsa 0x2AB3C", air_clemsa(0x2AB3C), False, ("Clemsa", 0x2AB3C, 18)),
+    # EV1527/PT2262 learning code decodes via the Princeton codec (same waveform).
+    ("EV1527 0xABC123", air_ev1527(0xABC123), False, ("Princeton", 0xABC123, 24)),
+    ("EV1527 0x5A5A5A", air_ev1527(0x5A5A5A), False, ("Princeton", 0x5A5A5A, 24)),
+    ("EV1527 te=200 0x0F0F0F", air_ev1527(0x0F0F0F, te=200), False, ("Princeton", 0x0F0F0F, 24)),
+    # Magellan: sync-preamble + CRC8, 40 ms inter-frame gap (own reception each).
+    ("Magellan 0xABCDEF", air_magellan(mag_key(0xABCDEF)), False, ("Magellan", mag_key(0xABCDEF), 32)),
+    ("Magellan 0x123456", air_magellan(mag_key(0x123456)), False, ("Magellan", mag_key(0x123456), 32)),
+    # Intertechno: 5:1 two-pair bits, ~10.4 ms inter-frame gap (own reception each).
+    ("Intertechno 0x12345678", air_intertechno(0x12345678), False, ("Intertechno_V3", 0x12345678, 32)),
+    ("Intertechno 0x0F0F0F0F", air_intertechno(0x0F0F0F0F), False, ("Intertechno_V3", 0x0F0F0F0F, 32)),
 ]
 for label, frame, fm, want in cases:
     for reps in (1, 3, 5):
@@ -425,23 +554,43 @@ check(all(decode(f) is None for f in fr), f"truncated 15/24-bit GateTX -> {[deco
 # a frame cut by buffer-full (no closing gap) is delivered but still not a valid decode
 check(decode(normalize(partial)) is None, "partial frame without closing gap decodes to None")
 
-print("== Part C: short-gap SEGMENTATION for Dooya / SMC5326 (no decoder yet) ==")
-# Faithful-ish inter-frame gaps; we only assert the splitter separates frames.
-def dooya_body(bits=40):     # start H4758 L1466 + 40 HIGH-first pairs (fixed pattern)
-    out = [4758, -1466]
-    for i in range(bits): out += [733, -366] if (i & 1) else [366, -733]
+print("== Part C: SMC5326 + Dooya short-gap SEGMENTATION + end-to-end decode ==")
+def dooya_body(key):         # start H4758 L1466 + 40 full HIGH-first 2:1 pairs (MSB-first)
+    out = [4758, -1466]      # the 40th bit's low merges into the next ~9 ms header
+    for i in range(39, -1, -1):
+        out += [733, -366] if (key >> i) & 1 else [366, -733]
     return out
-def smc_body(bits=25):       # 25 HIGH-first 3:1 pairs te 300/900 (fixed pattern)
+def smc_body(key):           # 25 HIGH-first 3:1 pairs (MSB-first) + stop high
     out = []
-    for i in range(bits): out += [900, -300] if (i & 1) else [300, -900]
-    out += [300]             # stop high
+    for i in range(24, -1, -1):
+        out += [900, -300] if (key >> i) & 1 else [300, -900]
+    out += [300]             # stop high; the te_short*25 guard low is the inter-frame gap
     return out
-recs = rmt_segment(short_gap_stream([dooya_body()]*4, 9200))   # Dooya ~9.2 ms gap
-check(len(recs) == 1 and len(sw_split(normalize(recs[0]))) == 4,
-      f"Dooya 9.2 ms gap: 4 frames from 1 reception -> {len(sw_split(normalize(recs[0])))}")
-recs = rmt_segment(short_gap_stream([smc_body()]*4, 7200))     # SMC5326 ~7.2 ms gap
-check(len(recs) == 1 and len(sw_split(normalize(recs[0]))) == 4,
-      f"SMC5326 7.2 ms gap: 4 frames from 1 reception -> {len(sw_split(normalize(recs[0])))}")
+# Dooya end-to-end: 4 repeats, 9.2 ms gap between frames. The 40th bit's low merges
+# with the header into the >6 ms separator, so each delivered frame ends on bit 40's
+# lone high and decodes with the key (proves the frame is not split and bit 40 reads).
+dkey = 0xE1DC030533
+recs = rmt_segment(short_gap_stream([dooya_body(dkey)]*4, 9200))
+frames = sw_split(normalize(recs[0]))
+check(len(recs) == 1 and len(frames) == 4,
+      f"Dooya 9.2 ms gap: 4 frames from 1 reception -> {len(frames)}")
+check([decode(f) for f in frames] == [("Dooya", dkey, 40)]*4,
+      f"Dooya each segmented frame decodes (bit 40 lone-high read) -> {[decode(f) for f in frames]}")
+dkeys = [0x0000000001, 0x8000000000, 0x5AA55AA55A, 0x123456789A]
+decd = [decode(f) for f in sw_split(normalize(rmt_segment(short_gap_stream([dooya_body(k) for k in dkeys], 9200))[0]))]
+check(decd == [("Dooya", k, 40) for k in dkeys], f"Dooya distinct keys in order -> {decd}")
+# SMC5326 end-to-end: 4 repeats of one key, 7.2 ms guard between words -> 4 frames,
+# each decodes to the same key (guard stripped, stop high kept, starts on a mark).
+recs = rmt_segment(short_gap_stream([smc_body(0x15AB3C5)]*4, 7200))
+frames = sw_split(normalize(recs[0]))
+check(len(recs) == 1 and len(frames) == 4,
+      f"SMC5326 7.2 ms gap: 4 frames from 1 reception -> {len(frames)}")
+check([decode(f) for f in frames] == [("SMC5326", 0x15AB3C5, 25)]*4,
+      f"SMC5326 each segmented frame decodes -> {[decode(f) for f in frames]}")
+# distinct keys recovered in order (no cross-frame contamination / dup)
+dkeys = [0x0000001, 0x1000000, 0x1555555, 0x0AAAAAA]
+dec = [decode(f) for f in sw_split(normalize(rmt_segment(short_gap_stream([smc_body(k) for k in dkeys], 7200))[0]))]
+check(dec == [("SMC5326", k, 25) for k in dkeys], f"SMC5326 distinct keys in order -> {dec}")
 
 print("== Part C: regression — the 10 current protocols still 1 frame per reception ==")
 # (Each uses a long header/trailer >10 ms, so the hardware segments them and the
@@ -574,8 +723,15 @@ check(rssi_recently_qualified(False, 0, 50, threshold=-128),
       "explicitly disabled RSSI threshold accepts RAW captures")
 check(median3(-100, -70, -101) == -100,
       "median-of-three rejects one isolated high RSSI sample")
-check(c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_MIN_RSSI") == -93,
-      "analyzer trigger matches Flipper's -93 dBm threshold")
+# Analyzer: user-adjustable trigger (Flipper-faithful), not a fixed threshold.
+_ANALYZER_TRIGGER = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_DEFAULT_TRIGGER")
+check(_ANALYZER_TRIGGER is not None and -110 <= _ANALYZER_TRIGGER <= 0,
+      f"analyzer default trigger is a sane dBm value ({_ANALYZER_TRIGGER})")
+check("SUBGHZ_ANALYZER_MIN_RSSI" not in SUBGHZ_SOURCE,
+      "the fixed absolute -93 dBm threshold is gone (replaced by the trigger)")
+check("SUBGHZ_ANALYZER_MIN_MARGIN_DB" not in SUBGHZ_SOURCE and
+      "SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES" not in SUBGHZ_SOURCE,
+      "the buggy relative noise-floor margin gate is removed")
 check(c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_REFINE_RADIUS_HZ") == 300000 and
       c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_REFINE_STEP_HZ") == 20000,
       "fine scan uses Flipper's +/-300 kHz / 20 kHz grid")
@@ -585,24 +741,47 @@ check("SUBGHZ_ANALYZER_BW_COARSE 0x17" in SUBGHZ_SOURCE and
 check("SUBGHZ_ANALYZER_NOISE_NEAR_HZ" not in SUBGHZ_SOURCE and
       "SUBGHZ_ANALYZER_NOISE_FAR_HZ" not in SUBGHZ_SOURCE,
       "the slow extra sideband scans are gone (gate adds no scan time)")
-check("SUBGHZ_ANALYZER_MIN_MARGIN_DB" in SUBGHZ_SOURCE and
-      "SUBGHZ_ANALYZER_MIN_FLOOR_SAMPLES" in SUBGHZ_SOURCE,
-      "a cheap band-floor margin gate (reusing the coarse sweep) rejects a noisy floor")
-check(analyzer_accept(-82, -84),
-      "analyzer accepts when both coarse and fine clear the threshold")
-check(not analyzer_accept(-82, -96),
-      "a strong coarse hit that the narrow fine scan cannot confirm is rejected as noise")
-check(not analyzer_accept(-96, -96),
-      "a peak below the -93 dBm threshold is rejected")
-check(analyzer_accept(-93, -93),
-      "a peak exactly at the threshold is accepted")
-# Relative band-floor gate (reuses the coarse sweep) — the phantom-detection fix.
-check(analyzer_accept(-70, -70, coarse_samples=[-100, -98, -101, -99, -70]),
-      "a carrier well above the band floor is accepted")
-check(not analyzer_accept(-85, -85, coarse_samples=[-86, -84, -85, -87, -85]),
-      "a peak that only matches a uniformly elevated floor is rejected as noise")
-check(analyzer_accept(-80, -80, coarse_samples=[-100, -70]),
-      "with too few valid floor samples, the absolute threshold alone decides")
+check("SUBGHZ_ANALYZER_AGCCTRL1 0x08" in SUBGHZ_SOURCE and
+      "SUBGHZ_ANALYZER_AGCCTRL0 0x30" in SUBGHZ_SOURCE and
+      "SUBGHZ_ANALYZER_MDMCFG3  0x7F" in SUBGHZ_SOURCE,
+      "analyzer applies Flipper's analyzer-specific AGC/modem registers")
+# Detection requires BOTH coarse and fine peaks above the trigger.
+check(analyzer_accept(-60, -62),
+      "a strong signal (both stages above the default trigger) is detected")
+check(not analyzer_accept(-95, -96),
+      "noise near the floor (both stages below the trigger) is NOT detected")
+check(not analyzer_accept(-60, -95),
+      "a coarse hit the narrow fine scan cannot confirm is rejected")
+check(not analyzer_accept(-95, -60),
+      "a fine hit without a coarse hit above the trigger is rejected")
+check(analyzer_accept(-85, -85, trigger=-90) and
+      not analyzer_accept(-85, -85, trigger=-80),
+      "raising the trigger above a weak peak stops it being reported (user-tunable)")
+# Auto-calibration: trigger is set a margin above the MEASURED band floor so
+# noise is rejected regardless of the hardware floor (the phantom-detection fix).
+_ACM = c_define(SUBGHZ_SOURCE, "SUBGHZ_ANALYZER_AUTOCAL_MARGIN_DB")
+check(_ACM is not None and 5 <= _ACM <= 25,
+      f"analyzer auto-cal margin above the noise floor is sane ({_ACM} dB)")
+check("analyzer_autocal" in SUBGHZ_SOURCE and "ANALYZER_TRIG" in SUBGHZ_SOURCE,
+      "analyzer auto-calibrates the trigger to the measured floor at start")
+# With auto-cal the trigger sits margin dB above the floor: band noise (= floor)
+# is below it, a real carrier (>> floor) is above it.
+_floor = -95
+_auto_trigger = _floor + _ACM
+check(not analyzer_accept(_floor, _floor, trigger=_auto_trigger),
+      "after auto-cal, band noise at the floor is NOT reported")
+check(analyzer_accept(_floor + 30, _floor + 30, trigger=_auto_trigger),
+      "after auto-cal, a carrier well above the floor IS reported")
+
+# EV1527 / PT2262 support: the common 433/315 learning code is the Princeton
+# waveform; aliases resolve to the Princeton codec for emulate/.sub interop.
+check('"EV1527"' in PROTOCOL_SOURCE and '"PT2262"' in PROTOCOL_SOURCE,
+      "EV1527/PT2262 accepted as names (alias to the Princeton codec)")
+# Holtek HT12X (12-bit) is byte-identical on-air to CAME-12 (no distinguishing
+# header/checksum; the only difference, preamble length, is stripped), so there is
+# no separate decoder — the names alias to the CAME codec for emulate/.sub interop.
+check('"HT12X"' in PROTOCOL_SOURCE and '"Holtek_HT12X"' in PROTOCOL_SOURCE,
+      "HT12X/Holtek_HT12X accepted as names (alias to the CAME codec)")
 print()
 print("RESULT:", "ALL PASS" if FAIL == 0 else f"{FAIL} FAILURES")
 import sys; sys.exit(1 if FAIL else 0)

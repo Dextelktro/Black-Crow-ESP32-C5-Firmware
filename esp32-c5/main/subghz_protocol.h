@@ -41,6 +41,10 @@ typedef enum {
     SUBGHZ_PROTO_DOITRAND,    /* 37-bit, 2:1, te 400/1100 */
     SUBGHZ_PROTO_PHOENIX_V2,  /* 52-bit, 2:1 inverted, te 427/853 */
     SUBGHZ_PROTO_CLEMSA,      /* 18-bit, 3:1-shape (HIGH-first), ratio 7:1 */
+    SUBGHZ_PROTO_SMC5326,     /* 25-bit, 3:1 (HIGH-first) + stop bit (PT226x tri-state) */
+    SUBGHZ_PROTO_DOOYA,       /* 40-bit, 2:1 (HIGH-first) + preamble (curtain motors) */
+    SUBGHZ_PROTO_MAGELLAN,    /* 32-bit, 2:1 + sync preamble + CRC8 (security sensors) */
+    SUBGHZ_PROTO_INTERTECHNO, /* 32-bit, 2 pairs/bit, 5:1 sync (home switches) */
     SUBGHZ_PROTO_COUNT,
 } subghz_proto_id_t;
 

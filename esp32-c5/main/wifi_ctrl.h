@@ -33,11 +33,3 @@ void wifi_ctrl_set_channel(uint8_t channel);
  * Both are idempotent-safe to pair; exit always restores the STA baseline. */
 esp_err_t wifi_ctrl_ap_enter(const char *ssid, uint8_t channel);
 esp_err_t wifi_ctrl_ap_exit(void);
-
-/* Fast active scan for WiFi live-scan mode.
- *   band_5g    : also scan the 5 GHz band when true
- *   min_ms/max_ms : per-channel active dwell window
- *   stop_flag  : optional pointer; scan aborts early when it becomes true
- * Returns >=0 AP count on success, -1 on failure. Updates the target list. */
-int wifi_ctrl_scan_fast(bool band_5g, uint32_t min_ms, uint32_t max_ms,
-                        volatile bool *stop_flag);

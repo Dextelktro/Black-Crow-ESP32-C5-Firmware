@@ -8,6 +8,15 @@ import '../services/device_controller.dart';
 import '../widgets/subghz_kit.dart';
 import 'subghz_radio_settings_screen.dart';
 
+/// Human-facing protocol label. The decoder reports (and `.sub` files store)
+/// "Princeton" for the whole 24-bit 3:1 learning-code family, but most 433/315
+/// remotes are EV1527 — so surface both names to the user. The stored/wire name
+/// stays "Princeton" for Flipper interop.
+String sgProtoDisplay(String proto) {
+  if (proto == 'Princeton') return 'Princeton / EV1527';
+  return proto;
+}
+
 String timeAgo(DateTime at) {
   final s = DateTime.now().difference(at).inSeconds;
   if (s < 1) return 'now';

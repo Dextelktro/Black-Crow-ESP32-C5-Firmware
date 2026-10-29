@@ -6,7 +6,6 @@
 
 #include "wifi_ctrl.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -18,36 +17,22 @@
 #include "esp_netif_ip_addr.h"
 #include "esp_wifi.h"
 #include "esp_err.h"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 #include "io.h"
-#include "targets.h"      /* TARGETS_MAX_APS didefinisikan di sini */
+#include "targets.h"          /* TARGETS_MAX_APS didefinisikan di sini */
+#include "wifi_live_scan.h"   /* wifi_live_scan_snapshot() — passive discovery */
 
 static const char *TAG = "wifi";
-static volatile bool s_scan_done = false;
 static SemaphoreHandle_t s_scan_mutex;
-static SemaphoreHandle_t s_scan_done_sem;
 static esp_netif_t *s_ap_netif = NULL;   /* created lazily on first AP enter */
 static volatile bool s_scan_cancel_requested;
 static volatile bool s_scan_async_active;
-
-static void wifi_event_handler(void *arg, esp_event_base_t base,
-                               int32_t id, void *data)
-{
-    (void)arg; (void)data;
-    if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
-        s_scan_done = true;
-        if (s_scan_done_sem) xSemaphoreGive(s_scan_done_sem);
-    }
-}
 
 void wifi_ctrl_init(void)
 {
     s_scan_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_scan_mutex ? ESP_OK : ESP_ERR_NO_MEM);
-    s_scan_done_sem = xSemaphoreCreateBinary();
-    ESP_ERROR_CHECK(s_scan_done_sem ? ESP_OK : ESP_ERR_NO_MEM);
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -86,10 +71,6 @@ void wifi_ctrl_init(void)
         ESP_LOGW(TAG, "set_promiscuous(true) failed: %d", pm_err);
     }
 
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT,
-                                                WIFI_EVENT_SCAN_DONE,
-                                                &wifi_event_handler, NULL));
-
     ESP_LOGI(TAG, "wifi: STA up, country=00, band=AUTO, promiscuous on");
 }
 
@@ -100,81 +81,14 @@ static void clear_scan_targets(void)
     targets_clear_selection();
 }
 
-/* Scan satu band dan kumpulkan hasil. Return jumlah, atau -1 jika timeout. */
-static int do_scan_and_collect(target_ap_t *out_aps, int max_aps)
-{
-    s_scan_done = false;
-    while (xSemaphoreTake(s_scan_done_sem, 0) == pdTRUE) {}
-
-    wifi_scan_config_t cfg = {
-        .ssid = NULL, .bssid = NULL,
-        .channel = 0, .show_hidden = true,
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        /* Keep the full dwell on every channel to avoid missing weak APs. */
-        .scan_time.active = { .min = 120, .max = 120 },
-    };
-
-    esp_err_t err = esp_wifi_scan_start(&cfg, false);
-    if (err != ESP_OK) return -1;
-
-    /* Sleep on the scan-done event instead of polling every 100 ms. */
-    for (int i = 0; i < 500 && !s_scan_done; i++) {
-        if (s_scan_cancel_requested) {
-            esp_err_t stop_err = esp_wifi_scan_stop();
-            if (stop_err != ESP_OK && stop_err != ESP_ERR_WIFI_NOT_STARTED) {
-                ESP_LOGW(TAG, "scan_stop after request failed: %d", stop_err);
-            }
-            xSemaphoreTake(s_scan_done_sem, pdMS_TO_TICKS(150));
-            s_scan_done = false;
-            while (xSemaphoreTake(s_scan_done_sem, 0) == pdTRUE) {}
-            return -2;
-        }
-        xSemaphoreTake(s_scan_done_sem, pdMS_TO_TICKS(20));
-    }
-    if (!s_scan_done) {
-        esp_err_t stop_err = esp_wifi_scan_stop();
-        if (stop_err != ESP_OK && stop_err != ESP_ERR_WIFI_NOT_STARTED) {
-            ESP_LOGW(TAG, "scan_stop after timeout failed: %d", stop_err);
-        }
-        /* esp_wifi_scan_stop() still fires a (delayed) WIFI_EVENT_SCAN_DONE.
-         * Drain it so a stale event can't flip s_scan_done true for the NEXT
-         * scan and make it return 0 APs. */
-        vTaskDelay(pdMS_TO_TICKS(150));
-        s_scan_done = false;
-        while (xSemaphoreTake(s_scan_done_sem, 0) == pdTRUE) {}
-        return -1;
-    }
-
-    uint16_t n = 0;
-    err = esp_wifi_scan_get_ap_num(&n);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "scan_get_ap_num failed: %d", err);
-        return -1;
-    }
-    if (n == 0) return 0;
-    if (n > max_aps) n = max_aps;
-
-    wifi_ap_record_t *recs = calloc(n, sizeof(wifi_ap_record_t));
-    if (!recs) return -1;
-
-    err = esp_wifi_scan_get_ap_records(&n, recs);
-    if (err != ESP_OK) { free(recs); return -1; }
-
-    int count = 0;
-    for (uint16_t i = 0; i < n; i++) {
-        memcpy(out_aps[count].bssid, recs[i].bssid, 6);
-        strncpy(out_aps[count].ssid, (const char *)recs[i].ssid,
-                sizeof(out_aps[count].ssid) - 1);
-        out_aps[count].ssid[sizeof(out_aps[count].ssid) - 1] = '\0';
-        out_aps[count].channel = recs[i].primary;
-        out_aps[count].rssi = recs[i].rssi;
-        out_aps[count].band_5ghz = (recs[i].primary > 14);
-        count++;
-    }
-    free(recs);
-    return count;
-}
-
+/* Network Target discovery. Driven entirely by the passive live-scan engine:
+ * it hops every 2.4 + 5 GHz channel in promiscuous mode and records the
+ * beacons it hears, then mirrors the result straight into the shared targets
+ * table. Unlike the old active esp_wifi_scan_start path it reliably sees 5 GHz
+ * APs under BLE coexistence (esp-idf#16059 / IDFGH-15407), and it emits no
+ * wlscan telemetry, so the `scan` wire protocol (scan: start / scan: N APs)
+ * and the monitor/select/deauth flow that reads the target table are all
+ * unchanged. */
 static int wifi_ctrl_scan_internal(void)
 {
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
@@ -182,95 +96,30 @@ static int wifi_ctrl_scan_internal(void)
         xSemaphoreGive(s_scan_mutex);
         return -2;
     }
-    io_log("scan: start (2.4 GHz)\r\n");
+    io_log("scan: start (2.4 + 5 GHz)\r\n");
 
-    target_ap_t *aps = heap_caps_calloc(TARGETS_MAX_APS, sizeof(*aps),
-                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!aps) {
-        io_log("scan: failed (out of memory)\r\n");
-        xSemaphoreGive(s_scan_mutex);
-        return -1;
-    }
+    /* One bounded dual-band sweep, ~150 ms listen per channel. The snapshot
+     * writes the captured APs into the target table itself. */
+    int total = wifi_live_scan_snapshot(true, 1, 150, &s_scan_cancel_requested);
 
-    /* LAYER 1: Scan 2.4 GHz — selalu berhasil meski BLE aktif */
-    esp_err_t band_err = esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
-    if (band_err != ESP_OK) {
-        ESP_LOGE(TAG, "set_band_mode(2G_ONLY) failed: %d", band_err);
-        io_log("scan: failed (cannot select 2.4 GHz band)\r\n");
-        heap_caps_free(aps);
-        xSemaphoreGive(s_scan_mutex);
-        return -1;
-    }
-    int n24 = do_scan_and_collect(aps, TARGETS_MAX_APS);
-    if (n24 < 0) {
-        esp_err_t restore_err = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-        if (restore_err != ESP_OK) {
-            ESP_LOGE(TAG, "set_band_mode(AUTO) after scan failure failed: %d",
-                     restore_err);
-        }
-        if (n24 == -2) {
-            clear_scan_targets();
-            heap_caps_free(aps);
-            xSemaphoreGive(s_scan_mutex);
-            return -2;
-        }
-        io_log("scan: failed (2.4 GHz scan)\r\n");
-        heap_caps_free(aps);
-        xSemaphoreGive(s_scan_mutex);
-        return -1;
-    }
-    int total = n24;
-
-    /* LAYER 2: Scan 5 GHz — bisa timeout jika BLE aktif (IDFGH-15407) */
-    if (s_scan_cancel_requested) {
-        band_err = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-        if (band_err != ESP_OK) {
-            ESP_LOGE(TAG, "set_band_mode(AUTO) after scan stop failed: %d",
-                     band_err);
-        }
+    if (total == -2) {
         clear_scan_targets();
-        heap_caps_free(aps);
         xSemaphoreGive(s_scan_mutex);
         return -2;
     }
-
-    if (total < TARGETS_MAX_APS) {
-        io_log("scan: 5 GHz...\r\n");
-        band_err = esp_wifi_set_band_mode(WIFI_BAND_MODE_5G_ONLY);
-        if (band_err != ESP_OK) {
-            ESP_LOGW(TAG, "set_band_mode(5G_ONLY) failed: %d", band_err);
-            io_log("scan: 5 GHz unavailable\r\n");
-        } else {
-            int remaining = TARGETS_MAX_APS - total;
-            int n5 = do_scan_and_collect(&aps[total], remaining);
-            if (n5 == -2) {
-                esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-                clear_scan_targets();
-                heap_caps_free(aps);
-                xSemaphoreGive(s_scan_mutex);
-                return -2;
-            }
-            if (n5 > 0) {
-                total += n5;
-            } else if (n5 < 0) {
-                io_log("scan: 5 GHz scan failed (BLE active?)\r\n");
-            }
-        }
+    if (total == -3) {
+        /* Radio owned by the continuous WiFi live scan — not a failure. */
+        io_log("scan: busy (live scan running)\r\n");
+        xSemaphoreGive(s_scan_mutex);
+        return -3;
     }
-
-    band_err = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-    if (band_err != ESP_OK) {
-        ESP_LOGE(TAG, "set_band_mode(AUTO) after scan failed: %d", band_err);
-        io_log("scan: failed (cannot restore automatic band selection)\r\n");
-        heap_caps_free(aps);
+    if (total < 0) {
+        io_log("scan: failed\r\n");
         xSemaphoreGive(s_scan_mutex);
         return -1;
     }
 
-    targets_set_aps(aps, total);
     targets_clear_selection();
-    heap_caps_free(aps);
-
     io_log("scan: %d APs\r\n", total);
     xSemaphoreGive(s_scan_mutex);
     return total;
@@ -322,113 +171,6 @@ void wifi_ctrl_scan_clear(void)
 {
     clear_scan_targets();
     io_log("scan: cleared\r\n");
-}
-
-/* Fast active scan on the CURRENT band. Starts the scan, waits (checking the
- * stop flag), and appends parsed results to out_aps starting at `offset`.
- * Returns the number appended, or -1 on start failure / abort. */
-static int fast_scan_current_band(target_ap_t *out_aps, int offset, int max_aps,
-                                  uint32_t min_ms, uint32_t max_ms,
-                                  int timeout_iter, volatile bool *stop_flag)
-{
-    if (offset >= max_aps) return 0;
-    if (stop_flag && *stop_flag) return -1;
-
-    s_scan_done = false;
-    wifi_scan_config_t cfg = {
-        .ssid = NULL, .bssid = NULL,
-        .channel = 0, .show_hidden = true,
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active = { .min = min_ms, .max = max_ms },
-    };
-    if (esp_wifi_scan_start(&cfg, false) != ESP_OK) return -1;
-
-    for (int i = 0; i < timeout_iter && !s_scan_done; i++) {
-        if (stop_flag && *stop_flag) {
-            esp_wifi_scan_stop();
-            vTaskDelay(pdMS_TO_TICKS(150));  /* drain pending SCAN_DONE */
-            s_scan_done = false;
-            return -1;
-        }
-        vTaskDelay(pdMS_TO_TICKS(25));
-    }
-    if (!s_scan_done) {
-        esp_wifi_scan_stop();
-        vTaskDelay(pdMS_TO_TICKS(150));      /* drain pending SCAN_DONE */
-        s_scan_done = false;
-        return -1;
-    }
-
-    uint16_t n = 0;
-    if (esp_wifi_scan_get_ap_num(&n) != ESP_OK || n == 0) return 0;
-    int room = max_aps - offset;
-    if (n > room) n = room;
-
-    wifi_ap_record_t *recs = calloc(n, sizeof(wifi_ap_record_t));
-    if (!recs) return 0;
-    if (esp_wifi_scan_get_ap_records(&n, recs) != ESP_OK) {
-        free(recs);
-        return 0;
-    }
-
-    int count = 0;
-    for (uint16_t i = 0; i < n; i++) {
-        target_ap_t *a = &out_aps[offset + count];
-        memcpy(a->bssid, recs[i].bssid, 6);
-        strncpy(a->ssid, (const char *)recs[i].ssid, sizeof(a->ssid) - 1);
-        a->ssid[sizeof(a->ssid) - 1] = '\0';
-        a->channel = recs[i].primary;
-        a->rssi = recs[i].rssi;
-        a->band_5ghz = (recs[i].primary > 14);
-        count++;
-    }
-    free(recs);
-    return count;
-}
-
-int wifi_ctrl_scan_fast(bool band_5g, uint32_t min_ms, uint32_t max_ms,
-                        volatile bool *stop_flag)
-{
-    xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
-
-    target_ap_t *aps = heap_caps_calloc(TARGETS_MAX_APS, sizeof(*aps),
-                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!aps) {
-        xSemaphoreGive(s_scan_mutex);
-        return -1;
-    }
-
-    int total = 0;
-    int ret = -1; /* -1 = fail, >=0 = ok */
-
-    if (stop_flag && *stop_flag) goto done;
-
-    /* 2.4 GHz (always, ~5s timeout) */
-    if (esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY) == ESP_OK) {
-        int n24 = fast_scan_current_band(aps, 0, TARGETS_MAX_APS,
-                                         min_ms, max_ms, 200, stop_flag);
-        if (n24 >= 0) {
-            total = n24;
-            ret = 0; /* at least 2.4 GHz succeeded */
-        }
-    }
-
-    /* 5 GHz (optional, ~7.5s timeout) */
-    if (ret == 0 && band_5g && total < TARGETS_MAX_APS &&
-        !(stop_flag && *stop_flag)) {
-        if (esp_wifi_set_band_mode(WIFI_BAND_MODE_5G_ONLY) == ESP_OK) {
-            int n5 = fast_scan_current_band(aps, total, TARGETS_MAX_APS,
-                                            min_ms, max_ms, 300, stop_flag);
-            if (n5 > 0) total += n5;
-        }
-    }
-
-done:
-    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-    if (ret == 0) targets_set_aps(aps, total);
-    heap_caps_free(aps);
-    xSemaphoreGive(s_scan_mutex);
-    return (ret == 0) ? total : -1;
 }
 
 void wifi_ctrl_set_channel(uint8_t channel)

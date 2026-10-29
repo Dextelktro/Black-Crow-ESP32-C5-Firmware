@@ -35,27 +35,161 @@ class AppRadius {
   static const hero = 20.0;
 }
 
-/// Page transition that keeps the Android zoom motion but paints a
-/// **transparent** scrim instead of the opaque `colorScheme.surface` the
-/// default uses — so the global [AppBackground] shows through consistently and
-/// there is no background "flash" on every push. Applied to every platform so
-/// navigation looks the same everywhere.
-const _zoomTransparent = ZoomPageTransitionsBuilder(
-  backgroundColor: Colors.transparent,
+const appRouteTransitionDuration = Duration(milliseconds: 220);
+const appPopupMenuAnimationStyle = AnimationStyle(
+  duration: Duration(milliseconds: 180),
+  curve: Curves.easeOutCubic,
+  reverseCurve: Curves.easeInCubic,
 );
+
+class AppPageRoute<T> extends MaterialPageRoute<T> {
+  AppPageRoute({required super.builder, super.settings});
+
+  @override
+  Duration get transitionDuration => appRouteTransitionDuration;
+
+  @override
+  Duration get reverseTransitionDuration => appRouteTransitionDuration;
+}
+
+/// Page transition used app-wide: a Material **fade-through**.
+///
+/// The outgoing page's content fades out over roughly the first half of the
+/// animation while the incoming page fades in — with a gentle zoom from
+/// 0.96→1.0 — starting at ~35%. The two fades overlap slightly, but because
+/// every page carries the same opaque [AppBackground] they only ever
+/// cross-dissolve over that identical backdrop, never beside each other, so you
+/// still never see two headers, two card stacks, or two pages side by side.
+/// The overlap is deliberate: a zero-overlap fade-through briefly showed the
+/// bare canvas with no content at all, which read as an almost-black flash
+/// mid-transition. Letting the outgoing content linger until the incoming has
+/// begun keeps the dimmest frame at roughly half content opacity instead.
+///
+/// Why this replaced the earlier horizontal iOS-style slide: a slide, by
+/// construction, parks the outgoing page *beside* the incoming one for the
+/// whole animation. Because every screen here shares the same left-aligned
+/// header + dark-card layout, that read as doubled titles / stacked cards / a
+/// glitch — exactly the overlap this fixes. Making each page opaque stopped the
+/// two *bleeding through* each other but not *sitting next to* each other; only
+/// removing the horizontal travel does that, and a fade-through has none.
+///
+/// Each page carries its own opaque [AppBackground] inside a [RepaintBoundary]:
+/// the outgoing *content* fades out over that backdrop (so the hand-off reveals
+/// the app canvas, never the route underneath or black), and the whole incoming
+/// page composites in as one cached layer. Live telemetry is withheld while the
+/// route animates (see UiTransitionGate), so the page rasterises once and the
+/// fade just composites that layer — which keeps it smooth despite the opacity
+/// pass. Forward and back run the same curves in reverse, so push and pop match.
+class _FadeThroughPageTransitionsBuilder extends PageTransitionsBuilder {
+  const _FadeThroughPageTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    // Incoming (this route being pushed / popped): fade in over the last ~65%
+    // so it only appears once the outgoing page has cleared, with a light zoom.
+    final incoming = CurvedAnimation(
+      parent: animation,
+      curve: const Interval(0.35, 1.0, curve: Curves.easeOut),
+      reverseCurve: const Interval(0.35, 1.0, curve: Curves.easeIn),
+    );
+    final zoom = Tween<double>(begin: 0.96, end: 1.0).animate(
+      CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      ),
+    );
+
+    // Outgoing (this route being covered / revealed): fade the *content* out
+    // over the first ~50%, leaving its opaque backdrop so the hand-off shows the
+    // app canvas rather than whatever route sits below. Ending at 0.5 (rather
+    // than 0.35) overlaps the incoming fade-in that starts at 0.35, so the
+    // content never fully disappears mid-transition — that empty window was the
+    // "almost black" flash. The shared opaque backdrop means the overlap reads
+    // as a cross-dissolve of co-located content, not two pages at once.
+    final outgoing = Tween<double>(begin: 1.0, end: 0.0).animate(
+      CurvedAnimation(
+        parent: secondaryAnimation,
+        curve: const Interval(0.0, 0.5, curve: Curves.easeIn),
+        reverseCurve: const Interval(0.0, 0.5, curve: Curves.easeOut),
+      ),
+    );
+
+    // RepaintBoundary wraps the (for the incoming route, static) opaque page so
+    // the fade/zoom composite a cached raster instead of re-rastering per frame.
+    return FadeTransition(
+      opacity: incoming,
+      child: ScaleTransition(
+        scale: zoom,
+        child: RepaintBoundary(
+          child: AppBackground(
+            child: FadeTransition(opacity: outgoing, child: child),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+const _appFadeThroughTransition = _FadeThroughPageTransitionsBuilder();
 const _appPageTransitions = PageTransitionsTheme(
   builders: <TargetPlatform, PageTransitionsBuilder>{
-    TargetPlatform.android: _zoomTransparent,
-    TargetPlatform.iOS: _zoomTransparent,
-    TargetPlatform.linux: _zoomTransparent,
-    TargetPlatform.macOS: _zoomTransparent,
-    TargetPlatform.windows: _zoomTransparent,
-    TargetPlatform.fuchsia: _zoomTransparent,
+    TargetPlatform.android: _appFadeThroughTransition,
+    TargetPlatform.iOS: _appFadeThroughTransition,
+    TargetPlatform.linux: _appFadeThroughTransition,
+    TargetPlatform.macOS: _appFadeThroughTransition,
+    TargetPlatform.windows: _appFadeThroughTransition,
+    TargetPlatform.fuchsia: _appFadeThroughTransition,
   },
 );
 
-/// Builds the dark theme. Scaffold is transparent so the global
-/// [AppBackground] (ambient layer) shows through every page.
+/// Ambient background painted behind each route (wired through the page
+/// transition above, so every page is self-contained and opaque). Static
+/// gradients only — the translucent [GlassCard]s reveal this as their colour.
+class AppBackground extends StatelessWidget {
+  const AppBackground({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    if (!isDark) {
+      return ColoredBox(color: const Color(0xFFF4F7F5), child: child);
+    }
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: AppColors.bg,
+        gradient: RadialGradient(
+          center: Alignment(-0.75, -0.95),
+          radius: 1.35,
+          colors: [Color(0x1842D9C3), Color(0x0042D9C3)],
+          stops: [0.0, 0.72],
+        ),
+      ),
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment(0.95, 0.85),
+            radius: 1.25,
+            colors: [Color(0x14123A33), Color(0x00000000)],
+            stops: [0.0, 0.7],
+          ),
+        ),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// Builds the dark theme. Scaffolds are transparent so each route's own
+/// [AppBackground] (wired through the page transition) shows through.
 ThemeData buildDarkTheme() {
   final scheme =
       ColorScheme.fromSeed(

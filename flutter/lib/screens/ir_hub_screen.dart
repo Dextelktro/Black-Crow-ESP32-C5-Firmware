@@ -16,7 +16,7 @@ const kIrAccent2 = Color(0xFFFF9E40);
 /// route pattern in project memory).
 void pushIr(BuildContext context, DeviceController ctrl, Widget screen) {
   Navigator.of(context).push(
-    MaterialPageRoute(
+    AppPageRoute(
       builder: (_) => ChangeNotifierProvider.value(value: ctrl, child: screen),
     ),
   );

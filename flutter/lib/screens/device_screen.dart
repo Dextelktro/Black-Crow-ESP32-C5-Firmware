@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../models/acl_entry.dart';
 import '../models/ap_entry.dart';
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
 import '../widgets/device_issue_banner.dart';
 import '../widgets/waterfall.dart';
 import 'home_screen.dart';
@@ -74,7 +75,11 @@ class _DeviceViewState extends State<_DeviceView> {
 
   @override
   Widget build(BuildContext context) {
-    final ctrl = context.watch<DeviceController>();
+    // read, not watch: this tabbed chrome (AppBar, menu, HomeBody host) is
+    // static. The only live part is the connection-issue banner, which
+    // subscribes locally below — so a ~20 Hz telemetry tick no longer rebuilds
+    // the whole Scaffold (which also piled onto every push/pop transition).
+    final ctrl = context.read<DeviceController>();
     final name = ctrl.conn.device.platformName.isNotEmpty
         ? ctrl.conn.device.platformName
         : 'Connected';
@@ -106,30 +111,31 @@ class _DeviceViewState extends State<_DeviceView> {
                 switch (value) {
                   case 'console':
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      AppPageRoute(
                         builder: (_) => _ConsoleScreen(controller: ctrl),
                       ),
                     );
                   case 'whitelist':
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      AppPageRoute(
                         builder: (_) =>
                             _AclScreen(controller: ctrl, isWhitelist: true),
                       ),
                     );
                   case 'blacklist':
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      AppPageRoute(
                         builder: (_) =>
                             _AclScreen(controller: ctrl, isWhitelist: false),
                       ),
                     );
                   case 'settings':
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      AppPageRoute(builder: (_) => const SettingsScreen()),
                     );
                 }
               },
+              popUpAnimationStyle: appPopupMenuAnimationStyle,
               itemBuilder: (_) => const [
                 PopupMenuItem(
                   value: 'console',
@@ -179,29 +185,35 @@ class _DeviceViewState extends State<_DeviceView> {
         ),
         body: Column(
           children: [
-            if (ctrl.connectionIssue != null)
-              MaterialBanner(
-                content: Text(ctrl.connectionIssue!),
-                leading: Icon(
-                  ctrl.connectionLost
-                      ? Icons.bluetooth_disabled
-                      : Icons.warning_amber,
-                  color: Colors.red,
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: ctrl.connectionLost
-                        ? () => Navigator.of(context).pop()
-                        : ctrl.dismissConnectionIssue,
-                    child: Text(
-                      ctrl.connectionLost ? 'BACK TO SCAN' : 'DISMISS',
-                    ),
+            // Only this banner reacts to live controller state, so subscribe
+            // here instead of at the top of build.
+            Consumer<DeviceController>(
+              builder: (context, ctrl, _) {
+                if (ctrl.connectionIssue == null) {
+                  return const SizedBox.shrink();
+                }
+                return MaterialBanner(
+                  content: Text(ctrl.connectionIssue!),
+                  leading: Icon(
+                    ctrl.connectionLost
+                        ? Icons.bluetooth_disabled
+                        : Icons.warning_amber,
+                    color: Colors.red,
                   ),
-                ],
-              ),
-              Expanded(
-                child: const HomeBody(),
-              ),
+                  actions: [
+                    TextButton(
+                      onPressed: ctrl.connectionLost
+                          ? () => Navigator.of(context).pop()
+                          : ctrl.dismissConnectionIssue,
+                      child: Text(
+                        ctrl.connectionLost ? 'BACK TO SCAN' : 'DISMISS',
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+            const Expanded(child: HomeBody()),
           ],
         ),
       ),
@@ -787,7 +799,7 @@ class _NetworkTargetBodyState extends State<_NetworkTargetBody> {
 
   void _openMonitor(BuildContext context, DeviceController ctrl, ApEntry ap) {
     Navigator.of(context).push(
-      MaterialPageRoute(
+      AppPageRoute(
         builder: (_) => ChangeNotifierProvider.value(
           value: ctrl,
           child: MonitorScreen(controller: ctrl, ap: ap),
@@ -881,17 +893,26 @@ class _AclTabState extends State<_AclTab> {
                 ),
               ),
               const SizedBox(width: 8),
-              DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: _kind,
-                  items: const [
-                    DropdownMenuItem(value: 'auto', child: Text('auto')),
-                    DropdownMenuItem(value: 'bssid', child: Text('bssid')),
-                    DropdownMenuItem(value: 'sta', child: Text('sta')),
-                  ],
-                  onChanged: (v) {
-                    if (v != null) setState(() => _kind = v);
-                  },
+              PopupMenuButton<String>(
+                initialValue: _kind,
+                tooltip: 'Target type',
+                position: PopupMenuPosition.under,
+                popUpAnimationStyle: appPopupMenuAnimationStyle,
+                onSelected: (value) => setState(() => _kind = value),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'auto', child: Text('auto')),
+                  PopupMenuItem(value: 'bssid', child: Text('bssid')),
+                  PopupMenuItem(value: 'sta', child: Text('sta')),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_kind),
+                      const Icon(Icons.arrow_drop_down),
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -1293,7 +1314,9 @@ class _NukeBodyState extends State<_NukeBody>
   /// monitor fed by the `wlscan: AIR` telemetry. Management + data frames are
   /// counted per second; a deauth/disassoc spike raises an attack alert.
   Widget _airSnifferPanel(DeviceController ctrl, {required bool live}) {
-    final alert = live && ctrl.airAlert;
+    // Held detection (not the raw per-window flag) so the panel stays steady
+    // while a flood continues, instead of blinking as the sniffer hops channels.
+    final alert = live && ctrl.airThreatActive;
     final accent = alert
         ? const Color(0xFFFF2A2A)
         : (live ? const Color(0xFF39FF14) : Colors.white38);
@@ -1421,7 +1444,7 @@ class _NukeBodyState extends State<_NukeBody>
               ),
               child: Text(
                 '⚠ POSSIBLE DEAUTH / DISASSOC FLOOD — AIR ATTACK NEARBY '
-                '(${ctrl.airDeauthPps + ctrl.airDisassocPps}/s)',
+                '(${ctrl.airThreatPps}/s)',
                 style: const TextStyle(
                   color: Color(0xFFFF6060),
                   fontSize: 10.5,
@@ -1516,16 +1539,20 @@ class _NukeBodyState extends State<_NukeBody>
               onExit: (_) => setState(() => _inputPos = null),
               child: GestureDetector(
                 onTapDown: (e) => setState(() => _inputPos = e.localPosition),
-                child: AnimatedBuilder(
-                  animation: _radarCtrl,
-                  builder: (_, _) => CustomPaint(
-                    painter: _RadarPainter(
-                      sweepAngle: _radarCtrl.value * 2 * math.pi,
-                      aps: radarAps,
-                      isNuking: anyRunning,
-                      inputPos: _inputPos,
+                // Confine the ~60 fps radar sweep repaint to its own layer so
+                // the surrounding status panel/chrome don't re-raster each frame.
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _radarCtrl,
+                    builder: (_, _) => CustomPaint(
+                      painter: _RadarPainter(
+                        sweepAngle: _radarCtrl.value * 2 * math.pi,
+                        aps: radarAps,
+                        isNuking: anyRunning,
+                        inputPos: _inputPos,
+                      ),
+                      child: const SizedBox.expand(),
                     ),
-                    child: const SizedBox.expand(),
                   ),
                 ),
               ),

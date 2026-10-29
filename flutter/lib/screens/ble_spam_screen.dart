@@ -235,7 +235,7 @@ class _TypeCard extends StatelessWidget {
     // can resolve the DeviceController — otherwise the detail screen renders
     // blank (ProviderNotFoundException).
     Navigator.of(context).push(
-      MaterialPageRoute(
+      AppPageRoute(
         builder: (_) => ChangeNotifierProvider.value(
           value: ctrl,
           child: BleSpamTypeScreen(controller: ctrl, type: type),

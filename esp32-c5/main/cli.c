@@ -132,7 +132,7 @@ static const char *HELP =
     "  subghz status                   CC1101 Sub-GHz status + live RSSI\r\n"
     "  subghz freq <hz>                set Sub-GHz frequency (300/433/868/915 bands)\r\n"
     "  subghz preset <ook270|ook650|2fsk238|2fsk476>   modulation preset\r\n"
-    "  subghz analyzer [stop]          sweep bands, report strongest frequency\r\n"
+    "  subghz analyzer [stop|trigger <dbm>]  sweep bands, report strongest freq above trigger\r\n"
     "  subghz spectrum band <1-6> [bins]   focused waterfall (315/390/415/433/868/915)\r\n"
     "  subghz spectrum [center] [span] [bins] | bands | stop   RSSI waterfall sweep\r\n"
     "  subghz readraw [strict|rssi <dbm>|stats|stop]   record raw OOK (default: continuous recorder; strict: one clean waveform)\r\n"
@@ -1641,6 +1641,13 @@ static void run_line(char *line)
         if (strcasecmp(argv[1], "analyzer") == 0) {
             if (argc >= 3 && strcasecmp(argv[2], "stop") == 0) {
                 subghz_analyzer_stop();
+            } else if (argc >= 3 && strcasecmp(argv[2], "trigger") == 0) {
+                if (argc < 4) {
+                    io_log("subghz: ANALYZER_TRIG %d\r\n",
+                           subghz_get_analyzer_trigger());
+                } else {
+                    subghz_set_analyzer_trigger(atoi(argv[3]));
+                }
             } else {
                 subghz_analyzer_start();
             }

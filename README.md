@@ -25,10 +25,42 @@ Firmware and companion controllers for the **ESP32-C5-DevKitC-1** with an
 **ESP32-C5-WROOM-1-N16R8** module. The firmware is configured for 16 MB flash
 and 8 MB quad-SPI PSRAM.
 
-<p align="center">
-  <img src="screenshots/radio-c5-dashboard.jpeg" alt="Radio C5 dashboard and device status" width="300">
-  <img src="screenshots/radio-c5-tools.jpeg" alt="Radio C5 tools and radio modules" width="300">
-</p>
+<h3 align="center">Companion app — screenshot tour</h3>
+
+<div align="center">
+<table>
+  <tr>
+    <td align="center" width="235"><img src="screenshots/app-home-dashboard.jpeg" alt="Home dashboard — connection, CPU load, chip temperature and storage" width="225"><br><sub><b>Home dashboard</b><br>Link · CPU · temp · storage</sub></td>
+    <td align="center" width="235"><img src="screenshots/app-rf-tools.jpeg" alt="RF tools menu listing every radio feature" width="225"><br><sub><b>RF tools menu</b><br>Every radio feature</sub></td>
+    <td align="center" width="235"><img src="screenshots/app-network-target.jpeg" alt="Network Target and Monitoring with 2.4 and 5 GHz live scan" width="225"><br><sub><b>Network Target</b><br>2.4 + 5 GHz live scan</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/app-nuke-radar.jpeg" alt="Nuke radar scope with live scan and air sniffer" width="225"><br><sub><b>Nuke radar</b><br>Live scan + air sniffer</sub></td>
+    <td align="center"><img src="screenshots/app-wifi-spectrum.jpeg" alt="WiFi spectrum waterfall across 2.4 and 5 GHz channels" width="225"><br><sub><b>WiFi spectrum</b><br>2.4 + 5 GHz waterfall</sub></td>
+    <td align="center"><img src="screenshots/app-ble-spectrum.jpeg" alt="Bluetooth LE advertisement RSSI spectrum" width="225"><br><sub><b>BLE spectrum</b><br>Advertisement RSSI</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/app-ble-spam.jpeg" alt="BLE spam advertising modes" width="225"><br><sub><b>BLE spam</b><br>Apple · Samsung · Google…</sub></td>
+    <td align="center"><img src="screenshots/app-wifi-spam.jpeg" alt="WiFi beacon spam modes" width="225"><br><sub><b>WiFi spam</b><br>Rickroll · funny · custom</sub></td>
+    <td align="center"><img src="screenshots/app-evil-portal.jpeg" alt="Evil portal captive-portal templates" width="225"><br><sub><b>Evil portal</b><br>Captive-portal templates</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/app-subghz-toolkit.jpeg" alt="Sub-GHz CC1101 toolkit" width="225"><br><sub><b>Sub-GHz toolkit</b><br>Read · RAW · analyzer</sub></td>
+    <td align="center"><img src="screenshots/app-subghz-radio-settings.jpeg" alt="Sub-GHz radio settings — frequency, modulation, squelch" width="225"><br><sub><b>Sub-GHz radio</b><br>Freq · preset · squelch</sub></td>
+    <td align="center"><img src="screenshots/app-subghz-spectrum.jpeg" alt="Sub-GHz swept-RSSI spectrum waterfall" width="225"><br><sub><b>Sub-GHz spectrum</b><br>Swept-RSSI waterfall</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/app-nrf24-toolkit.jpeg" alt="nRF24 toolkit — scanner, jammer, sniffer, MouseJack" width="225"><br><sub><b>nRF24 toolkit</b><br>Scan · jam · MouseJack</sub></td>
+    <td align="center"><img src="screenshots/app-nrf24-scanner.jpeg" alt="nRF24 spectrum scanner across 2.4 GHz channels" width="225"><br><sub><b>nRF24 scanner</b><br>126-channel RPD map</sub></td>
+    <td align="center"><img src="screenshots/app-infrared-hub.jpeg" alt="Infrared hub — universal remote, receiver, saved signals" width="225"><br><sub><b>Infrared hub</b><br>Remote · RX · saved</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/app-infrared-universal.jpeg" alt="Infrared universal remote categories" width="225"><br><sub><b>Universal remote</b><br>TV · A/C · audio · more</sub></td>
+    <td align="center"><img src="screenshots/app-hardware-peripheral.jpeg" alt="Hardware peripheral pin map for DevKitC-1 and XIAO" width="225"><br><sub><b>Peripheral map</b><br>DevKitC-1 · XIAO</sub></td>
+    <td align="center"><img src="screenshots/app-esp-flasher.jpeg" alt="ESP flasher over UART" width="225"><br><sub><b>ESP flasher</b><br>UART flash · upload</sub></td>
+  </tr>
+</table>
+</div>
 
 <p align="center">
   <a href="https://vt.tiktok.com/ZSg4y3XAG/">Watch the video on TikTok</a>

@@ -14,6 +14,7 @@ import '../models/portal_models.dart';
 import '../models/sta_entry.dart';
 import '../models/subghz_models.dart';
 import 'nus_client.dart';
+import 'ui_transition_gate.dart';
 
 /// Satu frame deauth yang di-report oleh firmware.
 class DeauthFrame {
@@ -280,6 +281,8 @@ class DeviceController extends ChangeNotifier {
   }, growable: false);
 
   DeviceController(this.conn) {
+    // Flush any telemetry coalesced during a route transition once it settles.
+    UiTransitionGate.instance.addIdleListener(_flushPendingNotify);
     _sub = conn.incoming.listen(
       _onChunk,
       onError: (Object error) {
@@ -361,6 +364,9 @@ class DeviceController extends ChangeNotifier {
   StreamSubscription<String>? _sub;
   Timer? _notifyTimer;
   bool _disposed = false;
+  // Set when a notification is withheld because a route transition is animating
+  // (see [_notifyListeners]); flushed once by [_flushPendingNotify] on settle.
+  bool _notifyPending = false;
   bool _temperatureNotificationPending = false;
   bool _systemNotificationPending = false;
 
@@ -521,7 +527,19 @@ class DeviceController extends ChangeNotifier {
   int airDisassocPps = 0;
   int airAuthPps = 0;
   int airEapolPps = 0;
-  bool airAlert = false;
+  bool airAlert = false; // raw per-window flood flag from the firmware
+  // Held / "sticky" flood detection. The sniffer channel-hops, so a flood on
+  // one channel is only heard for ~one dwell per ~1 s window and the raw
+  // [airAlert] blinks on/off as the scanner hops away from and back to the
+  // attacked channel — which is why the panel kept flipping between "flood" and
+  // "normal" while the attack was still running. Latch on every alerting window
+  // and hold for a few windows so the UI shows a steady detection across the
+  // hop gaps. One full 2.4+5 GHz channel cycle is ~3 s, so 6 one-second windows
+  // comfortably bridges the gap between two passes over the attacked channel.
+  static const int _airThreatHoldWindows = 6;
+  int _airThreatHold = 0;
+  bool airThreatActive = false; // what the UI reads for the alert styling
+  int airThreatPps = 0; // deauth+disassoc rate, held steady across hop gaps
   DateTime? airUpdatedAt;
   int airRev = 0; // bumped on every AIR line (repaint key for the sparkline)
   static const int _airHistoryLen = 64;
@@ -532,9 +550,27 @@ class DeviceController extends ChangeNotifier {
     airPps = airMgmtPps = airDataPps = airBeaconPps = airProbePps = 0;
     airDeauthPps = airDisassocPps = airAuthPps = airEapolPps = 0;
     airAlert = false;
+    airThreatActive = false;
+    _airThreatHold = 0;
+    airThreatPps = 0;
     airUpdatedAt = null;
     airRateHistory.clear();
     airThreatHistory.clear();
+  }
+
+  /// Next value of the air-sniffer flood-hold counter: latch to [holdWindows]
+  /// on an alerting window, otherwise count down toward zero. Pulled out as a
+  /// pure function so the hold/decay that keeps the detection steady across
+  /// channel hops is unit-testable — the AIR parser itself needs a live BLE
+  /// connection and cannot be driven in a widget test.
+  @visibleForTesting
+  static int airThreatHoldNext(
+    int prevHold,
+    bool windowAlert, {
+    int holdWindows = _airThreatHoldWindows,
+  }) {
+    if (windowAlert) return holdWindows;
+    return prevHold > 0 ? prevHold - 1 : 0;
   }
 
   // BLE Wardriving (continuous, classified)
@@ -707,9 +743,15 @@ class DeviceController extends ChangeNotifier {
   static const int _subghzBurstsMax = 20;
   SubghzRawBurst? _subghzLiveBurst;
   bool subghzHasCapture = false; // something captured this session (tx/save ok)
+  // Last `subghz readraw stats` readout (capture diagnostics), shown on demand.
+  String? subghzRawStats;
   // Frequency analyzer.
   int subghzAnalyzerPeakHz = 0;
   int subghzAnalyzerRssi = -128;
+  // Detection trigger level in dBm (Flipper's on-screen trigger bar). The
+  // firmware reports a frequency only when RSSI beats this; tune it just above
+  // the local noise floor. Mirrors the firmware default.
+  int subghzAnalyzerTrigger = -80;
   DateTime? subghzAnalyzerPeakAt;
   final List<SubghzAnalyzerDetection> subghzAnalyzerDetections = [];
   final List<int> subghzAnalyzerHistory = []; // peak rssi, oldest → newest
@@ -839,7 +881,22 @@ class DeviceController extends ChangeNotifier {
   Future<void> send(String command) => _sendCommand(command);
 
   void _notifyListeners() {
-    if (!_disposed) super.notifyListeners();
+    if (_disposed) return;
+    // While a route transition is animating, hold the notification so the
+    // push/pop keeps the UI thread to itself (listeners of this controller are
+    // whole screens). The withheld state is flushed exactly once by
+    // [_flushPendingNotify] when [UiTransitionGate] reports the UI idle.
+    if (UiTransitionGate.instance.isAnimating) {
+      _notifyPending = true;
+      return;
+    }
+    super.notifyListeners();
+  }
+
+  void _flushPendingNotify() {
+    if (_disposed || !_notifyPending) return;
+    _notifyPending = false;
+    super.notifyListeners();
   }
 
   void _scheduleNotify() {
@@ -1332,6 +1389,7 @@ class DeviceController extends ChangeNotifier {
   static final _reSgAnalyzer = RegExp(
     r'^subghz: ANALYZER peakfq=(\d+) rssi=(-?\d+)',
   );
+  static final _reSgAnalyzerTrig = RegExp(r'^subghz: ANALYZER_TRIG (-?\d+)');
   static final _reSgSpecBand = RegExp(
     r'^subghz: SPECBAND idx=(\d+) label=(\S+) lo=(\d+) hi=(\d+)',
   );
@@ -1551,29 +1609,51 @@ class DeviceController extends ChangeNotifier {
       if (!subghzAnalyzerRunning) return;
       final freqHz = int.tryParse(analyzer.group(1)!) ?? 0;
       final rssi = int.tryParse(analyzer.group(2)!) ?? -128;
-      if (freqHz <= 0 || rssi <= -128) return;
-
       final now = DateTime.now();
-      if (subghzAnalyzerPeakHz > 0 && subghzAnalyzerRssi > -128) {
+      // rssi is the LIVE measured band level every scan (noise floor when idle),
+      // so the RSSI bar/chart always moves and the user can set the trigger above
+      // the visible floor — Flipper's feedback bar. Feed it regardless of peak.
+      if (rssi > -128) {
+        subghzAnalyzerRssi = rssi;
+        subghzAnalyzerHistory.add(rssi);
+        while (subghzAnalyzerHistory.length > _subghzAnalyzerHistoryLen) {
+          subghzAnalyzerHistory.removeAt(0);
+        }
+      }
+      // peakfq=0 means "no detection right now": clear the frequency readout
+      // (return to 0) but keep the live level above. The detections history is
+      // kept so the user can still review what was seen.
+      if (freqHz <= 0) {
+        subghzAnalyzerPeakHz = 0;
+        subghzAnalyzerPeakAt = null;
+        return;
+      }
+
+      // Archive into the detections history only when this is a NEW distinct
+      // frequency (> 50 kHz from the one currently shown), so holding one remote
+      // down does not spam the list with the same entry on every scan.
+      const int kNewDetectionTolHz = 50000;
+      final bool newDetection =
+          subghzAnalyzerPeakHz == 0 ||
+          (freqHz - subghzAnalyzerPeakHz).abs() > kNewDetectionTolHz;
+      if (newDetection) {
         subghzAnalyzerDetections.insert(
           0,
-          SubghzAnalyzerDetection(
-            freqHz: subghzAnalyzerPeakHz,
-            rssi: subghzAnalyzerRssi,
-            at: subghzAnalyzerPeakAt ?? now,
-          ),
+          SubghzAnalyzerDetection(freqHz: freqHz, rssi: rssi, at: now),
         );
         if (subghzAnalyzerDetections.length > _subghzAnalyzerDetectionsMax) {
           subghzAnalyzerDetections.removeLast();
         }
       }
+      // Live level + history already updated above (applies to every scan).
       subghzAnalyzerPeakHz = freqHz;
-      subghzAnalyzerRssi = rssi;
       subghzAnalyzerPeakAt = now;
-      subghzAnalyzerHistory.add(subghzAnalyzerRssi);
-      while (subghzAnalyzerHistory.length > _subghzAnalyzerHistoryLen) {
-        subghzAnalyzerHistory.removeAt(0);
-      }
+      return;
+    }
+    final analyzerTrig = _reSgAnalyzerTrig.firstMatch(line);
+    if (analyzerTrig != null) {
+      subghzAnalyzerTrigger =
+          int.tryParse(analyzerTrig.group(1)!) ?? subghzAnalyzerTrigger;
       return;
     }
     if (line == 'subghz: SPECBANDS n=${_subghzBandsTmp.length}' ||
@@ -1740,7 +1820,13 @@ class DeviceController extends ChangeNotifier {
       subghzNotice = line.substring('subghz: '.length).trim();
       return;
     }
-    // Other diagnostics (RAWSTATS, SPECBANDS count, TX subus, …) are ignored.
+    if (line.startsWith('subghz: RAWSTATS ')) {
+      // Capture/squelch diagnostics for the last session — surfaced in the app
+      // so the user can see where a capture breaks without a serial terminal.
+      subghzRawStats = line.substring('subghz: RAWSTATS '.length).trim();
+      return;
+    }
+    // Other diagnostics (SPECBANDS count, TX subus, …) are ignored.
   }
 
   void _parseLine(String line) {
@@ -2815,6 +2901,14 @@ class DeviceController extends ChangeNotifier {
       airAuthPps = rate(9);
       airEapolPps = rate(10);
       airAlert = (wlAir.group(12) ?? '0') != '0';
+      // Latch the flood detection on each alerting window and hold it across the
+      // channel-hop gaps so the UI stays steady (see [_airThreatHoldWindows]).
+      final liveThreat = airDeauthPps + airDisassocPps;
+      _airThreatHold = airThreatHoldNext(_airThreatHold, airAlert);
+      airThreatActive = _airThreatHold > 0;
+      airThreatPps = airThreatActive
+          ? (liveThreat > 0 ? liveThreat : airThreatPps)
+          : 0;
       airUpdatedAt = DateTime.now();
       airRev++;
 
@@ -3508,6 +3602,15 @@ class DeviceController extends ChangeNotifier {
       connectionIssue = line;
       return;
     }
+    if (line.startsWith('scan: busy')) {
+      // One-shot scan refused because the continuous WiFi live scan owns the
+      // radio — not a hardware failure. Stop the spinner and surface why.
+      if (attacking && attackMode == 'deauthall') return;
+      scanning = false;
+      selectedIdxs = {};
+      connectionIssue = line;
+      return;
+    }
     if (line.startsWith('scan: ') &&
         (RegExp(r'scan: \d+ APs').hasMatch(line) ||
             line.startsWith('scan: no APs') ||
@@ -3826,14 +3929,28 @@ class DeviceController extends ChangeNotifier {
     secs = _clampSecs(secs);
     final prevStartedAt = nukeStartedAt;
     final prevDuration = nukeDurationSecs;
+    final prevAttacking = attacking;
+    final prevMode = attackMode;
     nukeDurationSecs = secs;
     nukeStartedAt = DateTime.now();
+    // Enter the attacking state optimistically so the Nuke screen flips to its
+    // running layout (status "NUKING", Stop button, radar accent) the instant
+    // the button is tapped — not after the BLE round-trip + the firmware echo
+    // that also tears the live scan down. Previously only [nukeStartedAt] was
+    // set here, but the UI gates on [attacking], so Start felt laggy while Stop
+    // (which already clears [attacking] optimistically) felt instant. The
+    // firmware's `attack: started` echo re-affirms this; a send failure rolls
+    // it back below.
+    attacking = true;
+    attackMode = 'nuke';
     _notifyListeners();
     try {
       await _sendCommand('nuke $secs');
     } catch (_) {
       nukeStartedAt = prevStartedAt;
       nukeDurationSecs = prevDuration;
+      attacking = prevAttacking;
+      attackMode = prevMode;
       _notifyListeners();
       rethrow;
     }
@@ -3844,6 +3961,8 @@ class DeviceController extends ChangeNotifier {
   /// 'unicast' (downgrade to per-STA unicast; needs a sniffed STA list).
   Future<void> deauthAll(int secs, {String mode = 'skip'}) async {
     secs = _clampSecs(secs);
+    final prevAttacking = attacking;
+    final prevMode = attackMode;
     deauthAllDurationSecs = secs;
     deauthAllMode = mode;
     deauthAllStartedAt = DateTime.now();
@@ -3852,11 +3971,18 @@ class DeviceController extends ChangeNotifier {
     deauthAllFrames.clear();
     deauthAllScanning = false;
     _tmpTargets.clear();
+    // Optimistically enter the attacking state so Deauth-All flips to its
+    // running layout immediately (see [nuke]); the firmware echo re-affirms it
+    // and a send failure rolls it back.
+    attacking = true;
+    attackMode = 'deauthall';
     _notifyListeners();
     try {
       await _sendCommand('deauthall --$mode $secs');
     } catch (_) {
       deauthAllStartedAt = null;
+      attacking = prevAttacking;
+      attackMode = prevMode;
       _notifyListeners();
       rethrow;
     }
@@ -4358,7 +4484,22 @@ class DeviceController extends ChangeNotifier {
   }
 
   Future<void> nrfWaterfallStop() async {
-    if (!nrfScanRunning) return;
+    // Clear the captured sweep/heatmap readout, not just the running flag, so
+    // stopping or leaving the scanner leaves nothing behind. Otherwise the next
+    // open ingests the stale [nrfScanSweep] as a bogus first waterfall row (and
+    // the chips show the previous session's peak) before a fresh sweep arrives.
+    // [nrfScanSamples] is the RPD denominator and is left at its last value so
+    // the readout never divides by zero. Symmetric with nrfWaterfallStart().
+    nrfScanChannels = const [];
+    nrfScanSweep = 0;
+    _nrfScanDumpSweep = 0;
+    nrfScanPeakCh = 0;
+    nrfScanPeakRpdDetections = 0;
+    _nrfScanTmp.clear();
+    if (!nrfScanRunning) {
+      _notifyListeners();
+      return;
+    }
     nrfScanRunning = false;
     _notifyListeners();
     try {
@@ -4529,7 +4670,15 @@ class DeviceController extends ChangeNotifier {
   }
 
   Future<void> nrfMjScanStop() async {
-    if (!nrfMjRunning) return;
+    // Also drop a stuck "injecting" flag: if the screen closes mid-inject the
+    // terminal echo can be missed, which would otherwise leave the hub showing
+    // MouseJack as LIVE indefinitely. Targets are kept on purpose — the user
+    // injects into them after the scan stops.
+    nrfMjInjecting = false;
+    if (!nrfMjRunning) {
+      _notifyListeners();
+      return;
+    }
     nrfMjRunning = false;
     _notifyListeners();
     try {
@@ -4539,6 +4688,19 @@ class DeviceController extends ChangeNotifier {
       _notifyListeners();
       rethrow;
     }
+  }
+
+  /// Drop the MouseJack readout (targets + counters) locally, without touching
+  /// the radio or notifying. The screen calls this as it closes so the kept
+  /// target list (needed for inject-after-stop while open) does not linger into
+  /// the next open's first frame. The radio is stopped separately via
+  /// [nrfMjScanStop]; a fresh open starts a new scan that repopulates this.
+  void nrfMjResetReadout() {
+    _nrfMjMap.clear();
+    nrfMjTargets = const [];
+    nrfMjFound = 0;
+    nrfMjElapsed = 0;
+    nrfMjInjecting = false;
   }
 
   Future<void> nrfMjClear() async {
@@ -4737,6 +4899,14 @@ class DeviceController extends ChangeNotifier {
     await _sendCommand('subghz readraw rssi $dbm');
   }
 
+  // Set the frequency-analyzer trigger level (dBm). Raise it until the display
+  // sits at 0 with no remote, then it will only latch a real signal above it.
+  Future<void> subghzSetAnalyzerTrigger(int dbm) async {
+    subghzAnalyzerTrigger = dbm;
+    _notifyListeners();
+    await _sendCommand('subghz analyzer trigger $dbm');
+  }
+
   Future<void> subghzSetStorage(SubghzStorageTarget target) async {
     await _sendCommand('subghz storage ${target.id}');
     await _sendCommand('subghz storage show');
@@ -4810,17 +4980,14 @@ class DeviceController extends ChangeNotifier {
   Future<void> subghzCloseReadSession() =>
       _closeSubghzSession(clearSession: _clearSubghzReadSession);
 
-  Future<void> subghzCloseReadRawSession() => _closeSubghzSession(
-    clearSession: _clearSubghzReadRawSession,
-  );
+  Future<void> subghzCloseReadRawSession() =>
+      _closeSubghzSession(clearSession: _clearSubghzReadRawSession);
 
-  Future<void> subghzCloseAnalyzerSession() => _closeSubghzSession(
-    clearSession: _clearSubghzAnalyzerSession,
-  );
+  Future<void> subghzCloseAnalyzerSession() =>
+      _closeSubghzSession(clearSession: _clearSubghzAnalyzerSession);
 
-  Future<void> subghzCloseSpectrumSession() => _closeSubghzSession(
-    clearSession: _clearSubghzSpectrumSession,
-  );
+  Future<void> subghzCloseSpectrumSession() =>
+      _closeSubghzSession(clearSession: _clearSubghzSpectrumSession);
 
   Future<void> subghzCloseBruteSession() =>
       _closeSubghzSession(clearSession: () {});
@@ -4857,6 +5024,10 @@ class DeviceController extends ChangeNotifier {
       () => subghzReadRawRunning = true,
     );
   }
+
+  // Request the capture diagnostics line (subghz: RAWSTATS ...). The reply lands
+  // in subghzRawStats. Works whether or not a capture is currently running.
+  Future<void> subghzReadRawStats() => _sendCommand('subghz readraw stats');
 
   Future<void> subghzAnalyzerStart() {
     _clearSubghzAnalyzerSession();
@@ -5841,6 +6012,7 @@ class DeviceController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    UiTransitionGate.instance.removeIdleListener(_flushPendingNotify);
     _notifyTimer?.cancel();
     _notifyTimer = null;
     _sub?.cancel();

@@ -42,7 +42,11 @@ class _Nrf24MousejackScreenState extends State<Nrf24MousejackScreen> {
 
   @override
   void dispose() {
+    // Stop the radio, then clear the kept target list so nothing lingers into
+    // the next open's first frame (the in-screen Stop keeps targets for
+    // injection; leaving the screen does not).
     unawaited(_ctrl?.nrfMjScanStop().catchError((Object _) {}));
+    _ctrl?.nrfMjResetReadout();
     super.dispose();
   }
 

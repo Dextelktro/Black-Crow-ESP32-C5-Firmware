@@ -96,6 +96,12 @@ esp_err_t subghz_readraw_stop(void);
 void subghz_set_rssi_threshold(int dbm);
 int  subghz_get_rssi_threshold(void);
 
+/* Frequency-analyzer trigger level in dBm (Flipper's on-screen trigger bar): a
+ * detection is reported only when the measured RSSI beats it. Tune just above
+ * the local noise floor; adjustable while the analyzer runs. */
+void subghz_set_analyzer_trigger(int dbm);
+int  subghz_get_analyzer_trigger(void);
+
 /* Emit a `subghz: RAWSTATS ...` line of capture/squelch diagnostic counters
  * (symbols received, truncations, buffer overflows, re-arms, callback latency,
  * squelch opens, RSSI read errors) — to verify no data loss without per-edge

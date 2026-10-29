@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
@@ -54,7 +55,7 @@ class _HomeBodyState extends State<HomeBody> {
 
   void _push(BuildContext context, DeviceController ctrl, Widget screen) {
     Navigator.of(context).push(
-      MaterialPageRoute(
+      AppPageRoute(
         builder: (_) =>
             ChangeNotifierProvider.value(value: ctrl, child: screen),
       ),
@@ -69,9 +70,11 @@ class _HomeBodyState extends State<HomeBody> {
     final ctrl = context.read<DeviceController>();
     final settings = context.watch<Settings>();
 
-    return ListView(
-      padding: const EdgeInsets.all(14),
-      children: [
+    // Lazy list: the children are held as cheap widget configs, but ListView
+    // mounts each item's costly render objects (GlassCard gradients, shadows,
+    // press controller) only as it scrolls into view — so opening the screen
+    // does not build and raster ~25 cards on the very first frame.
+    final items = <Widget>[
         // ── Live telemetry block ─────────────────────────────
         // Only this subtree is subscribed to DeviceController, so its frequent
         // notifications rebuild just these three cards — not the whole list —
@@ -661,7 +664,18 @@ class _HomeBodyState extends State<HomeBody> {
           subtitle: 'Read · Read RAW · Saved · Analyzer · Spectrum',
           onTap: () => _push(context, ctrl, const SubghzHubScreen()),
         ),
-      ],
+      ];
+    return ListView.builder(
+      padding: const EdgeInsets.all(14),
+      // Build/raster a little beyond the viewport (default is 250 px) so a glass
+      // card's first raster — gradient fill + sheen + shadow — happens just
+      // ahead of a fast scroll rather than on the frame it becomes visible,
+      // which is where the occasional reveal hitch came from. Kept modest: the
+      // only telemetry-subscribed cards sit at the very top, so this does not
+      // keep extra live cards rebuilding once the list is scrolled down.
+      scrollCacheExtent: const ScrollCacheExtent.pixels(500),
+      itemCount: items.length,
+      itemBuilder: (context, index) => items[index],
     );
   }
 }

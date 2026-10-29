@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../services/device_controller.dart';
 import '../services/settings.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_dropdown_field.dart';
 import '../widgets/glass_surface.dart';
 
 // Unified with the design-system identity hue (was a one-off cyan).
@@ -281,39 +282,37 @@ class _EspFlasherScreenState extends State<EspFlasherScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) {
-          final targetChipField = DropdownButtonFormField<String>(
-            initialValue: chip,
-            decoration: const InputDecoration(labelText: 'Target chip'),
-            items: chips
+          final targetChipField = AppDropdownField<String>(
+            label: 'Target chip',
+            value: chip,
+            valueLabel: chip == 'auto' ? 'Detect automatically' : chip,
+            itemBuilder: (_) => chips
                 .map(
-                  (name) => DropdownMenuItem(
+                  (name) => PopupMenuItem(
                     value: name,
                     child: Text(name == 'auto' ? 'Detect automatically' : name),
                   ),
                 )
                 .toList(growable: false),
-            onChanged: (value) {
-              if (value != null) setDialogState(() => chip = value);
-            },
+            onSelected: (value) => setDialogState(() => chip = value),
           );
-          final sourceField = DropdownButtonFormField<String>(
-            initialValue: storage,
-            decoration: const InputDecoration(labelText: 'BIN location'),
-            items: const [
-              DropdownMenuItem(value: 'lfs', child: Text('LittleFS')),
-              DropdownMenuItem(value: 'sd', child: Text('SD card')),
+          final sourceField = AppDropdownField<String>(
+            label: 'BIN location',
+            value: storage,
+            valueLabel: storage == 'lfs' ? 'LittleFS' : 'SD card',
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'lfs', child: Text('LittleFS')),
+              PopupMenuItem(value: 'sd', child: Text('SD card')),
             ],
-            onChanged: (value) {
-              if (value != null) {
-                setDialogState(() {
-                  storage = value;
-                  selectedImages.clear();
-                  for (final controller in offsets.values) {
-                    controller.dispose();
-                  }
-                  offsets.clear();
-                });
-              }
+            onSelected: (value) {
+              setDialogState(() {
+                storage = value;
+                selectedImages.clear();
+                for (final controller in offsets.values) {
+                  controller.dispose();
+                }
+                offsets.clear();
+              });
             },
           );
           return AlertDialog(

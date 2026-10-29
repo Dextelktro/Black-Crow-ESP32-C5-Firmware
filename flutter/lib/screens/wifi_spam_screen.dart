@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/device_controller.dart';
+import '../theme/app_theme.dart';
 import '../widgets/device_issue_banner.dart';
 import 'wifi_spam_mode_screen.dart';
 
@@ -75,7 +76,7 @@ class WifiSpamScreen extends StatelessWidget {
                   disabled: active && !isActiveMode,
                   running: isActiveMode,
                   onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(
+                    AppPageRoute(
                       builder: (_) => ChangeNotifierProvider.value(
                         value: ctrl,
                         child: WifiSpamModeScreen(mode: m),
