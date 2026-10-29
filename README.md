@@ -1,5 +1,6 @@
-
 ## Black Crow Firmware ESP32 C5
+
+Bcfw/Short for Black Crow Firmware, it's designed for security projects, no USB cable needed, no TFT screen or buttons required. No hardware yet and only have an ESP32 C5 board? No problem, the firmware connects to the app via BLE (NIMBLE) which is super easy to link, and you can start using it right after flashing and downloading the app.
 
 <p align="center">
   <img src="screenshots/black-crow-firmware.jpeg" alt="Black Crow Network and Embedded Experiment Laboratory logo" width="800">
